@@ -244,7 +244,7 @@ export default function VaultAccess() {
             {isAdmin && <button onClick={openAddCred} style={{...S.btn,background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#0f172a",padding:"9px 20px",whiteSpace:"nowrap"}}>+ Add Credential</button>}
           </div>
 
-          <div style={{marginBottom:"14px",color:"#64748b",fontSize:"13px"}}>{visible.length} credential{visible.length!==1?"s":""}{searchQuery?` matching "${searchQuery}":""}`}</div>
+          <div style={{marginBottom:"14px",color:"#64748b",fontSize:"13px"}}>{visible.length} credential{visible.length!==1?"s":""}{searchQuery?` matching "${searchQuery}"`:""}</div>
 
           {visible.length===0 ? (
             <div style={{textAlign:"center",padding:"4rem 2rem",background:"white",borderRadius:"16px",border:"1px solid #e5e9f0"}}>
@@ -483,3 +483,4 @@ export default function VaultAccess() {
     </div>
   );
 }
+
