@@ -1,485 +1,1882 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import bcrypt from "bcryptjs";
+import * as XLSX from "xlsx";
+import * as OTPAuth from "otpauth";
+import QRCode from "qrcode";
 
-const TEAMS = ["engineering", "marketing", "design", "ops"];
-const CATEGORIES = ["Development", "Infrastructure", "Design", "Marketing", "Communication", "Finance", "HR", "Other"];
-const ALL_TEAM_OPTIONS = ["admin", ...TEAMS];
+// ─── Constants ───────────────────────────────────────────────────────────────
+const LS = {
+  USERS: "vault_users",
+  CREDS: "vault_credentials",
+  AUDIT: "vault_audit",
+  REQUESTS: "vault_access_requests",
+  FAVS: "vault_favourites",
+};
+const SS_KEY = "vault_session";
 
-const DEFAULT_USERS = [
-  { id: "1", name: "Alex Chen", username: "alex", password: "admin123", team: "admin", avatar: "AC" },
-  { id: "2", name: "Sam Rivera", username: "sam", password: "eng123", team: "engineering", avatar: "SR" },
-  { id: "3", name: "Morgan Lee", username: "morgan", password: "mkt123", team: "marketing", avatar: "ML" },
-  { id: "4", name: "Jordan Park", username: "jordan", password: "des123", team: "design", avatar: "JP" },
-  { id: "5", name: "Casey Kim", username: "casey", password: "ops123", team: "ops", avatar: "CK" },
-];
-
-const DEFAULT_CREDENTIALS = [
-  { id: "1", portal: "GitHub", url: "github.com", username: "org-dev-team", password: "ghp_K9mX2pQrTs8vL4nW", category: "Development", teams: ["engineering"], addedBy: "Alex Chen", addedAt: "2025-01-15" },
-  { id: "2", portal: "AWS Console", url: "console.aws.amazon.com", username: "aws-devops@company.com", password: "Aws#2024!Secure", category: "Infrastructure", teams: ["engineering"], addedBy: "Alex Chen", addedAt: "2025-02-03" },
-  { id: "3", portal: "Figma", url: "figma.com", username: "design@company.com", password: "Fig@Creative24!", category: "Design", teams: ["design", "marketing"], addedBy: "Alex Chen", addedAt: "2025-01-28" },
-  { id: "4", portal: "HubSpot", url: "app.hubspot.com", username: "marketing@company.com", password: "Hub$pot2024!", category: "Marketing", teams: ["marketing"], addedBy: "Alex Chen", addedAt: "2025-03-10" },
-  { id: "5", portal: "Google Workspace", url: "workspace.google.com", username: "admin@company.com", password: "GWs@Admin2024", category: "Communication", teams: "all", addedBy: "Alex Chen", addedAt: "2025-01-01" },
-  { id: "6", portal: "Notion", url: "notion.so", username: "team@company.com", password: "N0tion$Team!", category: "Communication", teams: "all", addedBy: "Alex Chen", addedAt: "2025-01-01" },
-  { id: "7", portal: "Jira", url: "company.atlassian.net", username: "jira-admin@company.com", password: "Jira#Mgmt2025", category: "Development", teams: ["engineering"], addedBy: "Alex Chen", addedAt: "2025-02-20" },
-  { id: "8", portal: "Salesforce", url: "login.salesforce.com", username: "sales@company.com", password: "Sf@Sales2025!", category: "Marketing", teams: ["marketing"], addedBy: "Alex Chen", addedAt: "2025-03-05" },
-  { id: "9", portal: "Adobe Creative Cloud", url: "creativecloud.adobe.com", username: "design@company.com", password: "Adobe#CC2025!", category: "Design", teams: ["design"], addedBy: "Alex Chen", addedAt: "2025-01-18" },
-  { id: "10", portal: "Datadog", url: "app.datadoghq.com", username: "monitoring@company.com", password: "D@tadog!Ops25", category: "Infrastructure", teams: ["ops", "engineering"], addedBy: "Alex Chen", addedAt: "2025-02-14" },
-];
-
-const teamBadge = {
-  admin:       { bg: "#fef3c7", text: "#92400e", border: "#fde68a" },
-  engineering: { bg: "#dbeafe", text: "#1e40af", border: "#bfdbfe" },
-  marketing:   { bg: "#fce7f3", text: "#9d174d", border: "#fbcfe8" },
-  design:      { bg: "#ede9fe", text: "#6d28d9", border: "#ddd6fe" },
-  ops:         { bg: "#dcfce7", text: "#166534", border: "#bbf7d0" },
+const TEAMS = ["admin","engineering","marketing","design","ops"];
+const TEAM_STYLES = {
+  admin:       { bg:"#fef3c7", color:"#92400e", border:"#fde68a" },
+  engineering: { bg:"#dbeafe", color:"#1e40af", border:"#bfdbfe" },
+  marketing:   { bg:"#fce7f3", color:"#9d174d", border:"#fbcfe8" },
+  design:      { bg:"#ede9fe", color:"#6d28d9", border:"#ddd6fe" },
+  ops:         { bg:"#dcfce7", color:"#166534", border:"#bbf7d0" },
+};
+const CAT_ICONS = {
+  Development:"💻", Infrastructure:"🔧", Design:"🎨", Marketing:"📣",
+  Communication:"💬", Default:"🔑",
 };
 
-const storage = {
-  get: (key) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } },
-  set: (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} },
+// ─── Seed Data ────────────────────────────────────────────────────────────────
+function seedData() {
+  if (localStorage.getItem(LS.USERS)) return;
+  const users = [
+    { id:"u1", name:"Alex Chen",    username:"alex",   password:"Admin@123!",  team:"admin" },
+    { id:"u2", name:"Sam Rivera",   username:"sam",    password:"Eng@123!",    team:"engineering" },
+    { id:"u3", name:"Morgan Lee",   username:"morgan", password:"Mkt@123!",    team:"marketing" },
+    { id:"u4", name:"Jordan Park",  username:"jordan", password:"Des@123!",    team:"design" },
+    { id:"u5", name:"Casey Kim",    username:"casey",  password:"Ops@123!",    team:"ops" },
+  ].map(u => ({
+    id: u.id, name: u.name, username: u.username,
+    passwordHash: bcrypt.hashSync(u.password, 8),
+    team: u.team,
+    avatar: u.name.split(" ").map(p=>p[0]).join("").toUpperCase(),
+    createdAt: new Date().toISOString(),
+    lastLoginAt: null,
+    twoFactorEnabled: false, twoFactorSecret: "",
+    failedLoginAttempts: 0, lockedUntil: null,
+  }));
+  localStorage.setItem(LS.USERS, JSON.stringify(users));
+
+  const now = new Date().toISOString();
+  const creds = [
+    { id:"c1",  portal:"GitHub",               url:"github.com",               username:"org-dev-team",          password:"ghp_K9mX2pQrTs8vL4nW",  category:"Development",   teams:["engineering"],        needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c2",  portal:"AWS Console",          url:"console.aws.amazon.com",    username:"aws-devops@company.com", password:"Aws#2024!Secure",        category:"Infrastructure", teams:["engineering"],        needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c3",  portal:"Figma",                url:"figma.com",                 username:"design@company.com",    password:"Fig@Creative24!",         category:"Design",         teams:["design","marketing"], needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c4",  portal:"HubSpot",              url:"app.hubspot.com",           username:"marketing@company.com", password:"Hub$pot2024!",            category:"Marketing",      teams:["marketing"],          needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c5",  portal:"Google Workspace",     url:"workspace.google.com",      username:"admin@company.com",     password:"GWs@Admin2024",           category:"Communication",  teams:"all",                  needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c6",  portal:"Notion",               url:"notion.so",                 username:"team@company.com",      password:"N0tion$Team!",            category:"Communication",  teams:"all",                  needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c7",  portal:"Jira",                 url:"company.atlassian.net",     username:"jira-admin@company.com",password:"Jira#Mgmt2025",           category:"Development",    teams:["engineering"],        needsRotation:true,  passwordExpiryDays:90, rotationNote:"Scheduled rotation" },
+    { id:"c8",  portal:"Salesforce",           url:"login.salesforce.com",      username:"sales@company.com",     password:"Sf@Sales2025!",           category:"Marketing",      teams:["marketing"],          needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c9",  portal:"Adobe Creative Cloud", url:"creativecloud.adobe.com",   username:"design@company.com",    password:"Adobe#CC2025!",           category:"Design",         teams:["design"],             needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+    { id:"c10", portal:"Datadog",              url:"app.datadoghq.com",         username:"monitoring@company.com",password:"D@tadog!Ops25",           category:"Infrastructure", teams:["ops","engineering"],  needsRotation:false, passwordExpiryDays:90, rotationNote:"" },
+  ].map(c => ({ ...c, addedBy:"Alex Chen", addedAt:now, updatedAt:now }));
+  localStorage.setItem(LS.CREDS, JSON.stringify(creds));
+  localStorage.setItem(LS.AUDIT, JSON.stringify([]));
+  localStorage.setItem(LS.REQUESTS, JSON.stringify([]));
+  localStorage.setItem(LS.FAVS, JSON.stringify({}));
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const getId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const getLS = (k, def) => { try { const v = localStorage.getItem(k); return v !== null ? JSON.parse(v) : def; } catch { return def; } };
+const setLS = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+const getSession = () => { try { const v = sessionStorage.getItem(SS_KEY); return v ? JSON.parse(v) : null; } catch { return null; } };
+const setSession = v => sessionStorage.setItem(SS_KEY, JSON.stringify(v));
+const clearSession = () => sessionStorage.removeItem(SS_KEY);
+
+const timeAgo = ts => {
+  const s = Math.floor((Date.now() - new Date(ts)) / 1000);
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  return Math.floor(s/86400) + "d ago";
+};
+const fmtDate = ts => ts ? new Date(ts).toLocaleString() : "Never";
+const daysSince = ts => Math.floor((Date.now() - new Date(ts)) / 86400000);
+
+const canAccess = (cred, team) => {
+  if (team === "admin") return true;
+  if (cred.teams === "all") return true;
+  return Array.isArray(cred.teams) && cred.teams.includes(team);
 };
 
-const getInitials = (name) => name.trim().split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
-const CategoryIcon = ({ cat }) => ({ Development:"💻", Infrastructure:"🖥️", Design:"🎨", Marketing:"📣", Communication:"💬", Finance:"💰", HR:"👥", Other:"📁" }[cat] || "📁");
+const pwStrength = pw => {
+  let s = 0;
+  if (pw.length >= 8) s++;
+  if (pw.length >= 12) s++;
+  if (/[A-Z]/.test(pw)) s++;
+  if (/[0-9]/.test(pw)) s++;
+  if (/[^A-Za-z0-9]/.test(pw)) s++;
+  return s;
+};
 
-export default function VaultAccess() {
-  const [screen, setScreen]                       = useState("login");
-  const [currentUser, setCurrentUser]             = useState(null);
-  const [users, setUsers]                         = useState(DEFAULT_USERS);
-  const [credentials, setCredentials]             = useState(DEFAULT_CREDENTIALS);
-  const [loginUsername, setLoginUsername]         = useState("");
-  const [loginPassword, setLoginPassword]         = useState("");
-  const [loginError, setLoginError]               = useState("");
-  const [showLoginPass, setShowLoginPass]         = useState(false);
-  const [searchQuery, setSearchQuery]             = useState("");
-  const [selectedCategory, setSelectedCategory]   = useState("All");
-  const [revealedPw, setRevealedPw]               = useState({});
-  const [copiedId, setCopiedId]                   = useState(null);
-  const [activeTab, setActiveTab]                 = useState("credentials");
-  const [toast, setToast]                         = useState(null);
+function addAudit(entry) {
+  const audit = getLS(LS.AUDIT, []);
+  audit.unshift({ id:getId(), ...entry, timestamp:new Date().toISOString(), ipNote:"session" });
+  setLS(LS.AUDIT, audit.slice(0, 500));
+}
 
-  // Credential modal state
-  const [showCredModal, setShowCredModal]         = useState(false);
-  const [editingCred, setEditingCred]             = useState(null);
-  const [credForm, setCredForm]                   = useState({ portal:"", url:"", username:"", password:"", category:"Development", teams:[] });
-  const [credReveal, setCredReveal]               = useState(false);
-  const [delCred, setDelCred]                     = useState(null);
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const S = {
+  btn: (variant, extra) => {
+    const base = { padding:"8px 16px", borderRadius:8, border:"none", cursor:"pointer",
+      fontWeight:600, fontSize:14, transition:"all 0.15s", display:"inline-flex",
+      alignItems:"center", gap:4 };
+    const variants = {
+      primary: { background:"linear-gradient(135deg,#f59e0b,#d97706)", color:"#fff" },
+      danger:  { background:"#fee2e2", color:"#dc2626", border:"1px solid #fca5a5" },
+      ghost:   { background:"transparent", color:"#64748b", border:"1px solid #e5e9f0" },
+      secondary:{ background:"#f1f5f9", color:"#334155", border:"1px solid #e5e9f0" },
+    };
+    return { ...base, ...(variants[variant || "secondary"] || variants.secondary), ...(extra||{}) };
+  },
+  card: (extra) => ({ background:"#fff", borderRadius:14, border:"1px solid #e5e9f0",
+    padding:20, transition:"box-shadow 0.2s", ...(extra||{}) }),
+  input: (extra) => ({ width:"100%", padding:"10px 14px", borderRadius:8,
+    border:"1px solid #e5e9f0", fontSize:14, color:"#0f172a", background:"#f8fafc",
+    outline:"none", fontFamily:"inherit", boxSizing:"border-box", ...(extra||{}) }),
+  label: { fontSize:13, fontWeight:600, color:"#475569", marginBottom:4, display:"block" },
+  overlay: { position:"fixed", inset:0, background:"rgba(10,15,30,0.6)", zIndex:1000,
+    display:"flex", alignItems:"center", justifyContent:"center", padding:16 },
+};
 
-  // User modal state
-  const [showUserModal, setShowUserModal]         = useState(false);
-  const [editingUser, setEditingUser]             = useState(null);
-  const [userForm, setUserForm]                   = useState({ name:"", username:"", password:"", team:"engineering" });
-  const [userReveal, setUserReveal]               = useState(false);
-  const [delUser, setDelUser]                     = useState(null);
-
-  useEffect(() => {
-    const c = storage.get("vault_creds"); if (c) setCredentials(c);
-    const u = storage.get("vault_users"); if (u) setUsers(u);
-  }, []);
-
-  const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 2500); };
-  const saveCreds = (c) => { setCredentials(c); storage.set("vault_creds", c); };
-  const saveUsers = (u) => { setUsers(u);       storage.set("vault_users", u); };
-
-  const handleLogin = () => {
-    const user = users.find(u => u.username === loginUsername.trim() && u.password === loginPassword);
-    if (user) { setCurrentUser(user); setScreen("dashboard"); setLoginError(""); setLoginUsername(""); setLoginPassword(""); }
-    else setLoginError("Invalid credentials. Please try again.");
-  };
-
-  const visible = credentials.filter(c => {
-    const teamOk   = currentUser?.team === "admin" || c.teams === "all" || (Array.isArray(c.teams) && c.teams.includes(currentUser?.team));
-    const s        = searchQuery.toLowerCase();
-    const searchOk = !s || c.portal.toLowerCase().includes(s) || c.username.toLowerCase().includes(s) || c.category.toLowerCase().includes(s) || (c.url||"").toLowerCase().includes(s);
-    const catOk    = selectedCategory === "All" || c.category === selectedCategory;
-    return teamOk && searchOk && catOk;
-  });
-
-  const categories = ["All", ...new Set(credentials.map(c => c.category).filter(Boolean))];
-  const copy = async (text, id) => { try { await navigator.clipboard.writeText(text); setCopiedId(id); showToast("Copied!"); setTimeout(()=>setCopiedId(null),2000); } catch { showToast("Copy failed","error"); } };
-
-  // ── Credential handlers ──────────────────────────────────────────────────
-  const openAddCred  = () => { setEditingCred(null); setCredForm({portal:"",url:"",username:"",password:"",category:"Development",teams:[]}); setCredReveal(false); setShowCredModal(true); };
-  const openEditCred = (c) => { setEditingCred(c); setCredForm({portal:c.portal,url:c.url||"",username:c.username,password:c.password,category:c.category,teams:c.teams==="all"?["all"]:[...(c.teams||[])]}); setCredReveal(false); setShowCredModal(true); };
-  const saveCred = () => {
-    if (!credForm.portal.trim()||!credForm.username.trim()||!credForm.password.trim()) return;
-    const teams = credForm.teams.includes("all") ? "all" : credForm.teams;
-    if (editingCred) { saveCreds(credentials.map(c => c.id===editingCred.id ? {...c,...credForm,teams} : c)); showToast(`"${credForm.portal}" updated`); }
-    else { saveCreds([...credentials,{id:Date.now().toString(),...credForm,teams,addedBy:currentUser.name,addedAt:new Date().toISOString().split("T")[0]}]); showToast(`"${credForm.portal}" added`); }
-    setShowCredModal(false);
-  };
-  const deleteCred = (id) => { const c=credentials.find(x=>x.id===id); saveCreds(credentials.filter(x=>x.id!==id)); setDelCred(null); showToast(`"${c?.portal}" removed`,"error"); };
-  const toggleCredTeam = (team) => setCredForm(f => {
-    if (team==="all") return {...f, teams: f.teams.includes("all")?[]:["all"]};
-    const t = f.teams.filter(x=>x!=="all");
-    return {...f, teams: t.includes(team)?t.filter(x=>x!==team):[...t,team]};
-  });
-
-  // ── User handlers ────────────────────────────────────────────────────────
-  const openAddUser  = () => { setEditingUser(null); setUserForm({name:"",username:"",password:"",team:"engineering"}); setUserReveal(false); setShowUserModal(true); };
-  const openEditUser = (u) => { setEditingUser(u); setUserForm({name:u.name,username:u.username,password:u.password,team:u.team}); setUserReveal(false); setShowUserModal(true); };
-  const saveUser = () => {
-    if (!userForm.name.trim()||!userForm.username.trim()||!userForm.password.trim()) return;
-    if (users.find(u => u.username===userForm.username.trim() && u.id!==editingUser?.id)) { showToast("Username already taken","error"); return; }
-    const avatar = getInitials(userForm.name);
-    if (editingUser) {
-      const updated = users.map(u => u.id===editingUser.id ? {...u,...userForm,username:userForm.username.trim(),avatar} : u);
-      saveUsers(updated);
-      if (currentUser.id===editingUser.id) setCurrentUser(p => ({...p,...userForm,username:userForm.username.trim(),avatar}));
-      showToast(`${userForm.name} updated`);
-    } else {
-      saveUsers([...users,{id:Date.now().toString(),...userForm,username:userForm.username.trim(),avatar}]);
-      showToast(`${userForm.name} added`);
-    }
-    setShowUserModal(false);
-  };
-  const deleteUser = (id) => { const u=users.find(x=>x.id===id); saveUsers(users.filter(x=>x.id!==id)); setDelUser(null); showToast(`${u?.name} removed`,"error"); };
-
-  // ── Shared styles ────────────────────────────────────────────────────────
-  const S = {
-    root:    { fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,sans-serif", minHeight:"100vh", background:"#f0f2f5" },
-    header:  { background:"#0a0f1e", padding:"0 28px", display:"flex", alignItems:"center", justifyContent:"space-between", height:"58px", position:"sticky", top:0, zIndex:10, borderBottom:"1px solid #1a2332" },
-    main:    { padding:"28px", maxWidth:"1200px", margin:"0 auto" },
-    lbl:     { display:"block", fontSize:"11px", fontWeight:"600", color:"#94a3b8", textTransform:"uppercase", letterSpacing:"0.6px", marginBottom:"5px" },
-    inp:     { width:"100%", padding:"9px 12px", border:"1px solid #e5e9f0", borderRadius:"8px", fontSize:"14px", outline:"none", boxSizing:"border-box", color:"#0f172a" },
-    btn:     { padding:"9px 18px", borderRadius:"8px", border:"none", fontSize:"13px", fontWeight:"600", cursor:"pointer" },
-    pill:    (a) => ({ padding:"5px 14px", borderRadius:"20px", border:`1px solid ${a?"#f59e0b":"#e5e9f0"}`, background:a?"#fef9ee":"white", color:a?"#92400e":"#64748b", fontSize:"12px", fontWeight:a?"600":"400", cursor:"pointer", whiteSpace:"nowrap" }),
-    mono:    { fontFamily:"'JetBrains Mono','Fira Code','Courier New',monospace" },
-    overlay: { position:"fixed", inset:0, background:"rgba(10,15,30,0.6)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:50, padding:"1rem" },
-    modal:   { background:"white", borderRadius:"18px", padding:"28px", width:"100%", maxWidth:"500px", maxHeight:"90vh", overflowY:"auto" },
-  };
-
-  // ─── LOGIN ───────────────────────────────────────────────────────────────
-  if (screen === "login") return (
-    <div style={{minHeight:"100vh",background:"#060d1a",display:"flex",alignItems:"center",justifyContent:"center",padding:"2rem",fontFamily:"'Inter',sans-serif"}}>
-      <div style={{width:"100%",maxWidth:"420px"}}>
-        <div style={{textAlign:"center",marginBottom:"2.5rem"}}>
-          <div style={{width:"60px",height:"60px",background:"linear-gradient(135deg,#f59e0b,#d97706)",borderRadius:"16px",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px",fontSize:"28px"}}>🔐</div>
-          <h1 style={{color:"white",fontSize:"28px",fontWeight:"800",margin:0,letterSpacing:"-0.5px"}}>VaultAccess</h1>
-          <p style={{color:"#475569",margin:"8px 0 0",fontSize:"14px"}}>Secure team credential management</p>
-        </div>
-        <div style={{background:"#0f1a2e",borderRadius:"16px",padding:"28px",border:"1px solid #1e2d45"}}>
-          <div style={{marginBottom:"18px"}}>
-            <label style={{display:"block",color:"#64748b",fontSize:"11px",fontWeight:"600",textTransform:"uppercase",letterSpacing:"0.6px",marginBottom:"7px"}}>Username</label>
-            <input type="text" value={loginUsername} onChange={e=>{setLoginUsername(e.target.value);setLoginError("");}} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="Enter your username" style={{width:"100%",padding:"11px 14px",background:"#060d1a",border:`1px solid ${loginError?"#7f1d1d":"#1e2d45"}`,borderRadius:"9px",color:"white",fontSize:"14px",outline:"none",boxSizing:"border-box"}}/>
-          </div>
-          <div style={{marginBottom:"20px"}}>
-            <label style={{display:"block",color:"#64748b",fontSize:"11px",fontWeight:"600",textTransform:"uppercase",letterSpacing:"0.6px",marginBottom:"7px"}}>Password</label>
-            <div style={{position:"relative"}}>
-              <input type={showLoginPass?"text":"password"} value={loginPassword} onChange={e=>{setLoginPassword(e.target.value);setLoginError("");}} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="Enter your password" style={{width:"100%",padding:"11px 42px 11px 14px",background:"#060d1a",border:`1px solid ${loginError?"#7f1d1d":"#1e2d45"}`,borderRadius:"9px",color:"white",fontSize:"14px",outline:"none",boxSizing:"border-box"}}/>
-              <button onClick={()=>setShowLoginPass(p=>!p)} style={{position:"absolute",right:"12px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#475569",fontSize:"16px",padding:0}}>{showLoginPass?"🙈":"👁️"}</button>
-            </div>
-          </div>
-          {loginError && <div style={{background:"rgba(127,29,29,0.4)",border:"1px solid #7f1d1d",borderRadius:"8px",padding:"10px 14px",color:"#fca5a5",fontSize:"13px",marginBottom:"18px"}}>⚠️ {loginError}</div>}
-          <button onClick={handleLogin} style={{width:"100%",padding:"12px",background:"linear-gradient(135deg,#f59e0b,#d97706)",border:"none",borderRadius:"9px",color:"#0f172a",fontSize:"14px",fontWeight:"700",cursor:"pointer"}}>Sign In →</button>
-        </div>
-      </div>
+// ─── Toast ────────────────────────────────────────────────────────────────────
+function ToastContainer({ toasts }) {
+  return (
+    <div style={{ position:"fixed", top:20, right:20, zIndex:9999, display:"flex", flexDirection:"column", gap:8 }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{ padding:"12px 20px", borderRadius:10, fontWeight:500, fontSize:14,
+          color:"#fff", minWidth:260, boxShadow:"0 4px 16px rgba(0,0,0,0.15)",
+          background: t.type==="success"?"#16a34a":t.type==="error"?"#dc2626":"#2563eb",
+          animation:"slideIn 0.2s ease" }}>{t.msg}</div>
+      ))}
     </div>
   );
+}
 
-  // ─── DASHBOARD ───────────────────────────────────────────────────────────
-  const isAdmin = currentUser.team === "admin";
-  const ub = teamBadge[currentUser.team] || teamBadge.engineering;
+function useToast() {
+  const [toasts, setToasts] = useState([]);
+  const toast = useCallback((msg, type) => {
+    const id = getId();
+    setToasts(p => [...p, { id, msg, type:type||"info" }]);
+    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3500);
+  }, []);
+  return [toasts, toast];
+}
+
+// ─── Password Strength Bar ────────────────────────────────────────────────────
+function StrengthBar({ password }) {
+  const s = pwStrength(password || "");
+  const colors = ["#dc2626","#dc2626","#f59e0b","#f59e0b","#16a34a"];
+  const labels = ["","Weak","Weak","Fair","Good","Strong"];
+  if (!password) return null;
+  return (
+    <div style={{ marginTop:6 }}>
+      <div style={{ display:"flex", gap:4, marginBottom:4 }}>
+        {[1,2,3,4,5].map(i => (
+          <div key={i} style={{ flex:1, height:4, borderRadius:2,
+            background: i<=s ? colors[s-1] : "#e5e9f0" }} />
+        ))}
+      </div>
+      <div style={{ fontSize:12, color:colors[s-1]||"#94a3b8" }}>{labels[s]||""}</div>
+    </div>
+  );
+}
+
+// ─── Team Badge ───────────────────────────────────────────────────────────────
+function TeamBadge({ team, small }) {
+  const st = TEAM_STYLES[team] || { bg:"#f1f5f9", color:"#64748b", border:"#e5e9f0" };
+  return (
+    <span style={{ background:st.bg, color:st.color, border:"1px solid "+st.border,
+      borderRadius:20, padding:small?"2px 8px":"3px 10px",
+      fontSize:small?11:12, fontWeight:600, display:"inline-block" }}>
+      {team}
+    </span>
+  );
+}
+
+// ─── Login Screen ─────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [error, setError] = useState("");
+  const [lockMsg, setLockMsg] = useState("");
+  const [seeded, setSeeded] = useState(false);
+
+  useEffect(() => { seedData(); setSeeded(true); }, []);
+
+  const isFirstVisit = !localStorage.getItem("_va_visited");
+
+  const DEMO = [
+    { role:"Admin", username:"alex", password:"Admin@123!" },
+    { role:"Engineering", username:"sam", password:"Eng@123!" },
+    { role:"Marketing", username:"morgan", password:"Mkt@123!" },
+    { role:"Design", username:"jordan", password:"Des@123!" },
+    { role:"Ops", username:"casey", password:"Ops@123!" },
+  ];
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    setError(""); setLockMsg("");
+    const users = getLS(LS.USERS, []);
+    const user = users.find(u => u.username === username.trim().toLowerCase());
+    if (!user) { setError("Invalid username or password."); return; }
+
+    if (user.lockedUntil && Date.now() < user.lockedUntil) {
+      const rem = Math.ceil((user.lockedUntil - Date.now()) / 60000);
+      setLockMsg("Account locked. Try again in " + rem + " minute(s).");
+      return;
+    }
+
+    if (!bcrypt.compareSync(password, user.passwordHash)) {
+      const fails = (user.failedLoginAttempts || 0) + 1;
+      const upd = { failedLoginAttempts:fails };
+      if (fails >= 5) upd.lockedUntil = Date.now() + 15 * 60000;
+      setLS(LS.USERS, users.map(u => u.id===user.id ? { ...u, ...upd } : u));
+      addAudit({ userId:user.id, userName:user.name, action:"login_failed" });
+      if (fails >= 5) setLockMsg("Too many attempts. Account locked 15 minutes.");
+      else setError("Invalid password. " + (5-fails) + " attempt(s) remaining.");
+      return;
+    }
+
+    const updUsers = users.map(u => u.id===user.id
+      ? { ...u, failedLoginAttempts:0, lockedUntil:null, lastLoginAt:new Date().toISOString() } : u);
+    setLS(LS.USERS, updUsers);
+    localStorage.setItem("_va_visited", "1");
+
+    const freshUser = { ...user, failedLoginAttempts:0, lockedUntil:null };
+    if (user.twoFactorEnabled) {
+      onLogin({ stage:"totp", user:freshUser });
+    } else {
+      setSession({ userId:user.id, userName:user.name, team:user.team,
+        loginAt:new Date().toISOString(), lastActivityAt:new Date().toISOString() });
+      addAudit({ userId:user.id, userName:user.name, action:"login" });
+      onLogin({ stage:"dashboard", user:freshUser });
+    }
+  };
+
+  const darkInput = { ...S.input(), background:"rgba(255,255,255,0.05)", color:"#fff",
+    border:"1px solid rgba(255,255,255,0.12)" };
 
   return (
-    <div style={S.root}>
-      {/* Header */}
-      <div style={S.header}>
-        <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
-          <div style={{width:"32px",height:"32px",background:"linear-gradient(135deg,#f59e0b,#d97706)",borderRadius:"8px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px"}}>🔐</div>
-          <span style={{color:"white",fontWeight:"700",fontSize:"16px",letterSpacing:"-0.3px"}}>VaultAccess</span>
+    <div style={{ minHeight:"100vh", background:"#060d1a", display:"flex",
+      alignItems:"center", justifyContent:"center", flexDirection:"column", padding:20 }}>
+      <div style={{ background:"#0f1a2e", borderRadius:20, padding:40, width:"100%", maxWidth:420,
+        boxShadow:"0 20px 60px rgba(0,0,0,0.5)", border:"1px solid rgba(245,158,11,0.15)" }}>
+        <div style={{ textAlign:"center", marginBottom:32 }}>
+          <div style={{ fontSize:40, marginBottom:8 }}>🔐</div>
+          <h1 style={{ color:"#fff", fontSize:26, fontWeight:700, letterSpacing:-0.5 }}>VaultAccess</h1>
+          <p style={{ color:"#64748b", fontSize:14, marginTop:4 }}>Secure credential management</p>
         </div>
-        {isAdmin && (
-          <div style={{display:"flex",gap:"4px",background:"#111827",borderRadius:"8px",padding:"4px"}}>
-            {["credentials","users"].map(tab=>(
-              <button key={tab} onClick={()=>setActiveTab(tab)} style={{padding:"6px 16px",borderRadius:"6px",border:"none",cursor:"pointer",background:activeTab===tab?"#1e2d45":"transparent",color:activeTab===tab?"white":"#475569",fontSize:"13px",fontWeight:"500"}}>
-                {tab==="credentials"?"🔑 Credentials":"👥 Users"}
-              </button>
-            ))}
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom:16 }}>
+            <label style={{ ...S.label, color:"#94a3b8" }}>Username</label>
+            <input value={username} onChange={e=>setUsername(e.target.value)}
+              style={darkInput} placeholder="Enter username" autoFocus />
           </div>
-        )}
-        <div style={{display:"flex",alignItems:"center",gap:"12px"}}>
-          <div style={{textAlign:"right"}}>
-            <div style={{color:"white",fontSize:"13px",fontWeight:"600"}}>{currentUser.name}</div>
-            <div style={{fontSize:"11px",color:"#475569",textTransform:"capitalize"}}>{currentUser.team}</div>
+          <div style={{ marginBottom:20, position:"relative" }}>
+            <label style={{ ...S.label, color:"#94a3b8" }}>Password</label>
+            <input type={showPw?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)}
+              style={{ ...darkInput, paddingRight:44 }} placeholder="Enter password" />
+            <button type="button" onClick={()=>setShowPw(p=>!p)}
+              style={{ position:"absolute", right:12, top:32, background:"none", border:"none",
+                cursor:"pointer", color:"#64748b", fontSize:16, padding:0 }}>
+              {showPw?"🙈":"👁"}
+            </button>
           </div>
-          <div style={{width:"36px",height:"36px",background:ub.bg,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:ub.text,fontSize:"11px",fontWeight:"700",border:`2px solid ${ub.border}`}}>{currentUser.avatar}</div>
-          <button onClick={()=>{setScreen("login");setCurrentUser(null);setRevealedPw({});}} style={{background:"transparent",border:"1px solid #1e2d45",borderRadius:"7px",color:"#64748b",padding:"6px 12px",fontSize:"12px",cursor:"pointer"}}>Sign out</button>
-        </div>
+          {error && <div style={{ background:"rgba(220,38,38,0.1)", border:"1px solid rgba(220,38,38,0.3)",
+            color:"#fca5a5", borderRadius:8, padding:"10px 14px", fontSize:13, marginBottom:16 }}>{error}</div>}
+          {lockMsg && <div style={{ background:"rgba(245,158,11,0.1)", border:"1px solid rgba(245,158,11,0.3)",
+            color:"#fcd34d", borderRadius:8, padding:"10px 14px", fontSize:13, marginBottom:16 }}>{lockMsg}</div>}
+          <button type="submit" style={{ ...S.btn("primary"), width:"100%", padding:"12px",
+            fontSize:16, justifyContent:"center" }}>Sign In</button>
+        </form>
       </div>
 
-      {/* Toast */}
-      {toast && <div style={{position:"fixed",top:"70px",right:"24px",zIndex:99,background:toast.type==="error"?"#fee2e2":"#dcfce7",color:toast.type==="error"?"#991b1b":"#166534",border:`1px solid ${toast.type==="error"?"#fca5a5":"#86efac"}`,borderRadius:"8px",padding:"10px 16px",fontSize:"13px",fontWeight:"600",boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}}>
-        {toast.type==="error"?"⚠️":"✅"} {toast.msg}
-      </div>}
-
-      <div style={S.main}>
-
-        {/* ── CREDENTIALS TAB ─────────────────────────────────────────────── */}
-        {(activeTab==="credentials"||!isAdmin) && (<>
-          {/* Stats */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:"14px",marginBottom:"24px"}}>
-            {[
-              {label:"Accessible",value:visible.length,icon:"🔑",color:"#fef9ee",border:"#fde68a"},
-              {label:"Categories",value:new Set(visible.map(c=>c.category)).size,icon:"📂",color:"#eff6ff",border:"#bfdbfe"},
-              {label:"Team",value:currentUser.team,icon:"👥",color:ub.bg,border:ub.border},
-              ...(isAdmin?[{label:"Total",value:credentials.length,icon:"📋",color:"#f0fdf4",border:"#bbf7d0"}]:[]),
-            ].map((st,i)=>(
-              <div key={i} style={{background:st.color,borderRadius:"12px",padding:"16px 18px",border:`1px solid ${st.border}`}}>
-                <div style={{fontSize:"22px",marginBottom:"6px"}}>{st.icon}</div>
-                <div style={{fontSize:"22px",fontWeight:"800",color:"#0f172a",lineHeight:1}}>{st.value}</div>
-                <div style={{fontSize:"12px",color:"#64748b",marginTop:"4px"}}>{st.label}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Search + filters */}
-          <div style={{display:"flex",gap:"12px",marginBottom:"20px",alignItems:"center",flexWrap:"wrap"}}>
-            <div style={{flex:1,minWidth:"220px",position:"relative"}}>
-              <span style={{position:"absolute",left:"12px",top:"50%",transform:"translateY(-50%)",color:"#94a3b8"}}>🔍</span>
-              <input type="text" value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="Search portals, usernames, URLs…" style={{...S.inp,paddingLeft:"36px",background:"white"}}/>
-            </div>
-            <div style={{display:"flex",gap:"7px",flexWrap:"wrap"}}>
-              {categories.map(cat=><button key={cat} onClick={()=>setSelectedCategory(cat)} style={S.pill(selectedCategory===cat)}>{cat}</button>)}
-            </div>
-            {isAdmin && <button onClick={openAddCred} style={{...S.btn,background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#0f172a",padding:"9px 20px",whiteSpace:"nowrap"}}>+ Add Credential</button>}
-          </div>
-
-          <div style={{marginBottom:"14px",color:"#64748b",fontSize:"13px"}}>{visible.length} credential{visible.length!==1?"s":""}{searchQuery ? ` matching "${searchQuery}"` : ""}</div>
-
-          {visible.length===0 ? (
-            <div style={{textAlign:"center",padding:"4rem 2rem",background:"white",borderRadius:"16px",border:"1px solid #e5e9f0"}}>
-              <div style={{fontSize:"52px",marginBottom:"12px"}}>🔒</div>
-              <p style={{color:"#475569",fontSize:"15px",margin:0}}>No credentials found</p>
-            </div>
-          ) : (
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:"16px"}}>
-              {visible.map(cred=>{
-                const rev = revealedPw[cred.id];
-                return (
-                  <div key={cred.id} style={{background:"white",borderRadius:"14px",border:"1px solid #e5e9f0",padding:"20px",transition:"box-shadow 0.15s"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 20px rgba(0,0,0,0.08)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"14px"}}>
-                      <div style={{flex:1}}>
-                        <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                          <span style={{fontSize:"18px"}}><CategoryIcon cat={cred.category}/></span>
-                          <span style={{fontWeight:"700",fontSize:"16px",color:"#0f172a"}}>{cred.portal}</span>
-                        </div>
-                        {cred.url&&<div style={{fontSize:"12px",color:"#94a3b8",marginTop:"2px",marginLeft:"26px"}}>{cred.url}</div>}
-                      </div>
-                      <div style={{display:"flex",gap:"4px",alignItems:"center"}}>
-                        <span style={{padding:"3px 9px",borderRadius:"20px",fontSize:"11px",fontWeight:"600",background:"#f8fafc",color:"#64748b",border:"1px solid #e5e9f0"}}>{cred.category}</span>
-                        {isAdmin&&<>
-                          <button onClick={()=>openEditCred(cred)} style={{background:"#f8fafc",border:"1px solid #e5e9f0",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"13px",display:"flex",alignItems:"center",justifyContent:"center"}}>✏️</button>
-                          <button onClick={()=>setDelCred(cred.id)} style={{background:"#fff5f5",border:"1px solid #fecaca",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"13px",display:"flex",alignItems:"center",justifyContent:"center"}}>🗑️</button>
-                        </>}
-                      </div>
-                    </div>
-                    {/* Username */}
-                    <div style={{marginBottom:"10px"}}>
-                      <label style={S.lbl}>Username / Email</label>
-                      <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                        <code style={{...S.mono,flex:1,fontSize:"13px",color:"#1e293b",background:"#f8fafc",padding:"7px 10px",borderRadius:"7px",border:"1px solid #e5e9f0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>{cred.username}</code>
-                        <button onClick={()=>copy(cred.username,`u-${cred.id}`)} style={{background:copiedId===`u-${cred.id}`?"#dcfce7":"#f8fafc",border:`1px solid ${copiedId===`u-${cred.id}`?"#86efac":"#e5e9f0"}`,borderRadius:"7px",width:"32px",height:"32px",cursor:"pointer",fontSize:"14px",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{copiedId===`u-${cred.id}`?"✓":"📋"}</button>
-                      </div>
-                    </div>
-                    {/* Password */}
-                    <div style={{marginBottom:"14px"}}>
-                      <label style={S.lbl}>Password</label>
-                      <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                        <code style={{...S.mono,flex:1,fontSize:"13px",color:rev?"#1e293b":"#94a3b8",background:"#f8fafc",padding:"7px 10px",borderRadius:"7px",border:"1px solid #e5e9f0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block",letterSpacing:rev?"normal":"3px"}}>{rev?cred.password:"••••••••••••"}</code>
-                        <button onClick={()=>setRevealedPw(p=>({...p,[cred.id]:!p[cred.id]}))} style={{background:rev?"#fef9ee":"#f8fafc",border:`1px solid ${rev?"#fde68a":"#e5e9f0"}`,borderRadius:"7px",width:"32px",height:"32px",cursor:"pointer",fontSize:"14px",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{rev?"🙈":"👁️"}</button>
-                        <button onClick={()=>copy(cred.password,`p-${cred.id}`)} style={{background:copiedId===`p-${cred.id}`?"#dcfce7":"#f8fafc",border:`1px solid ${copiedId===`p-${cred.id}`?"#86efac":"#e5e9f0"}`,borderRadius:"7px",width:"32px",height:"32px",cursor:"pointer",fontSize:"14px",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{copiedId===`p-${cred.id}`?"✓":"📋"}</button>
-                      </div>
-                    </div>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
-                        {cred.teams==="all"
-                          ? <span style={{padding:"3px 9px",borderRadius:"20px",fontSize:"11px",background:"#dcfce7",color:"#166534",fontWeight:"600",border:"1px solid #bbf7d0"}}>🌐 All teams</span>
-                          : (cred.teams||[]).map(t=>{ const b=teamBadge[t]||teamBadge.engineering; return <span key={t} style={{padding:"3px 9px",borderRadius:"20px",fontSize:"11px",background:b.bg,color:b.text,fontWeight:"500",border:`1px solid ${b.border}`}}>{t}</span>; })}
-                      </div>
-                      <div style={{fontSize:"11px",color:"#cbd5e1"}}>{cred.addedAt}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>)}
-
-        {/* ── USERS TAB ───────────────────────────────────────────────────── */}
-        {activeTab==="users"&&isAdmin&&(
-          <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px"}}>
-              <div>
-                <h2 style={{margin:0,fontSize:"20px",fontWeight:"700",color:"#0f172a"}}>Team Members</h2>
-                <p style={{margin:"4px 0 0",color:"#64748b",fontSize:"14px"}}>{users.length} accounts</p>
-              </div>
-              <button onClick={openAddUser} style={{...S.btn,background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#0f172a",padding:"9px 20px"}}>+ Add User</button>
-            </div>
-
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:"14px"}}>
-              {users.map(u=>{
-                const b = teamBadge[u.team]||teamBadge.engineering;
-                const credCount = credentials.filter(c=>u.team==="admin"||c.teams==="all"||(Array.isArray(c.teams)&&c.teams.includes(u.team))).length;
-                const isSelf = u.id===currentUser.id;
-                return (
-                  <div key={u.id} style={{background:"white",borderRadius:"14px",border:`1px solid ${isSelf?"#fde68a":"#e5e9f0"}`,padding:"20px",position:"relative"}}>
-                    {isSelf&&<span style={{position:"absolute",top:"14px",right:"14px",fontSize:"10px",fontWeight:"700",background:"#fef3c7",color:"#92400e",padding:"2px 8px",borderRadius:"20px",border:"1px solid #fde68a"}}>You</span>}
-                    <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"14px"}}>
-                      <div style={{width:"48px",height:"48px",background:b.bg,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:b.text,fontSize:"14px",fontWeight:"700",border:`2px solid ${b.border}`,flexShrink:0}}>{u.avatar}</div>
-                      <div>
-                        <div style={{fontWeight:"700",fontSize:"15px",color:"#0f172a"}}>{u.name}</div>
-                        <span style={{padding:"2px 9px",borderRadius:"20px",fontSize:"11px",background:b.bg,color:b.text,fontWeight:"600",border:`1px solid ${b.border}`}}>{u.team}</span>
-                      </div>
-                    </div>
-                    <div style={{borderTop:"1px solid #f1f5f9",paddingTop:"12px",marginBottom:"14px"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}>
-                        <span style={{color:"#64748b"}}>Username</span>
-                        <code style={{...S.mono,color:"#0f172a",fontSize:"13px"}}>{u.username}</code>
-                      </div>
-                      <div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}>
-                        <span style={{color:"#64748b"}}>Credentials access</span>
-                        <span style={{fontWeight:"700",color:"#0f172a"}}>{credCount}</span>
-                      </div>
-                      <div style={{display:"flex",justifyContent:"space-between",fontSize:"13px"}}>
-                        <span style={{color:"#64748b"}}>Role</span>
-                        <span style={{fontWeight:"600",color:u.team==="admin"?"#d97706":"#475569"}}>{u.team==="admin"?"🔧 Admin":"👤 Member"}</span>
-                      </div>
-                    </div>
-                    <div style={{display:"flex",gap:"8px"}}>
-                      <button onClick={()=>openEditUser(u)} style={{...S.btn,flex:1,background:"#f8fafc",border:"1px solid #e5e9f0",color:"#475569",padding:"7px"}}>✏️ Edit</button>
-                      {!isSelf&&<button onClick={()=>setDelUser(u.id)} style={{...S.btn,flex:1,background:"#fff5f5",border:"1px solid #fecaca",color:"#dc2626",padding:"7px"}}>🗑️ Remove</button>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── CREDENTIAL MODAL ──────────────────────────────────────────────── */}
-      {showCredModal&&(
-        <div style={S.overlay}>
-          <div style={S.modal}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"22px"}}>
-              <h2 style={{margin:0,fontSize:"18px",fontWeight:"700",color:"#0f172a"}}>{editingCred?"✏️ Edit Credential":"➕ New Credential"}</h2>
-              <button onClick={()=>setShowCredModal(false)} style={{background:"#f8fafc",border:"1px solid #e5e9f0",borderRadius:"8px",width:"32px",height:"32px",cursor:"pointer",color:"#64748b",fontSize:"16px"}}>✕</button>
-            </div>
-            {[{label:"Portal Name *",key:"portal",ph:"GitHub, AWS Console…"},{label:"URL (optional)",key:"url",ph:"github.com"},{label:"Username / Email *",key:"username",ph:"user@example.com"}].map(f=>(
-              <div key={f.key} style={{marginBottom:"14px"}}>
-                <label style={S.lbl}>{f.label}</label>
-                <input type="text" value={credForm[f.key]} onChange={e=>setCredForm(x=>({...x,[f.key]:e.target.value}))} placeholder={f.ph} style={S.inp}/>
-              </div>
-            ))}
-            <div style={{marginBottom:"14px"}}>
-              <label style={S.lbl}>Password *</label>
-              <div style={{position:"relative"}}>
-                <input type={credReveal?"text":"password"} value={credForm.password} onChange={e=>setCredForm(f=>({...f,password:e.target.value}))} placeholder="Enter password" style={{...S.inp,paddingRight:"42px"}}/>
-                <button onClick={()=>setCredReveal(p=>!p)} style={{position:"absolute",right:"10px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#94a3b8",fontSize:"16px"}}>{credReveal?"🙈":"👁️"}</button>
-              </div>
-            </div>
-            <div style={{marginBottom:"14px"}}>
-              <label style={S.lbl}>Category</label>
-              <select value={credForm.category} onChange={e=>setCredForm(f=>({...f,category:e.target.value}))} style={{...S.inp,cursor:"pointer"}}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
-            </div>
-            <div style={{marginBottom:"22px"}}>
-              <label style={S.lbl}>Team Access</label>
-              <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
-                <button onClick={()=>toggleCredTeam("all")} style={S.pill(credForm.teams.includes("all"))}>🌐 All teams</button>
-                {TEAMS.map(team=>{ const b=teamBadge[team]; const a=credForm.teams.includes(team); return <button key={team} onClick={()=>toggleCredTeam(team)} style={{padding:"5px 14px",borderRadius:"20px",border:`1px solid ${a?b.border:"#e5e9f0"}`,background:a?b.bg:"white",color:a?b.text:"#64748b",fontSize:"12px",fontWeight:a?"600":"400",cursor:"pointer"}}>{team}</button>; })}
-              </div>
-              {credForm.teams.length===0&&<p style={{color:"#f97316",fontSize:"12px",margin:"6px 0 0"}}>⚠️ Select at least one team</p>}
-            </div>
-            <div style={{display:"flex",gap:"10px"}}>
-              <button onClick={()=>setShowCredModal(false)} style={{...S.btn,flex:1,background:"#f8fafc",border:"1px solid #e5e9f0",color:"#475569"}}>Cancel</button>
-              <button onClick={saveCred} disabled={!credForm.portal.trim()||!credForm.username.trim()||!credForm.password.trim()} style={{...S.btn,flex:2,background:credForm.portal&&credForm.username&&credForm.password?"linear-gradient(135deg,#f59e0b,#d97706)":"#e5e9f0",color:credForm.portal&&credForm.username&&credForm.password?"#0f172a":"#94a3b8",fontWeight:"700"}}>
-                {editingCred?"Save Changes":"Add Credential"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── USER MODAL ────────────────────────────────────────────────────── */}
-      {showUserModal&&(
-        <div style={S.overlay}>
-          <div style={{...S.modal,maxWidth:"440px"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"22px"}}>
-              <h2 style={{margin:0,fontSize:"18px",fontWeight:"700",color:"#0f172a"}}>{editingUser?"✏️ Edit User":"➕ Add User"}</h2>
-              <button onClick={()=>setShowUserModal(false)} style={{background:"#f8fafc",border:"1px solid #e5e9f0",borderRadius:"8px",width:"32px",height:"32px",cursor:"pointer",color:"#64748b",fontSize:"16px"}}>✕</button>
-            </div>
-
-            {/* Live avatar preview */}
-            <div style={{display:"flex",justifyContent:"center",marginBottom:"20px"}}>
-              <div style={{width:"56px",height:"56px",background:(teamBadge[userForm.team]||teamBadge.engineering).bg,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:(teamBadge[userForm.team]||teamBadge.engineering).text,fontSize:"16px",fontWeight:"700",border:`2px solid ${(teamBadge[userForm.team]||teamBadge.engineering).border}`}}>
-                {userForm.name?getInitials(userForm.name):"?"}
-              </div>
-            </div>
-
-            <div style={{marginBottom:"14px"}}>
-              <label style={S.lbl}>Full Name *</label>
-              <input type="text" value={userForm.name} onChange={e=>setUserForm(f=>({...f,name:e.target.value}))} placeholder="e.g. Jane Smith" style={S.inp}/>
-            </div>
-            <div style={{marginBottom:"14px"}}>
-              <label style={S.lbl}>Username *</label>
-              <input type="text" value={userForm.username} onChange={e=>setUserForm(f=>({...f,username:e.target.value}))} placeholder="e.g. jane" style={{...S.inp,...S.mono}}/>
-            </div>
-            <div style={{marginBottom:"14px"}}>
-              <label style={S.lbl}>Password *</label>
-              <div style={{position:"relative"}}>
-                <input type={userReveal?"text":"password"} value={userForm.password} onChange={e=>setUserForm(f=>({...f,password:e.target.value}))} placeholder="Set a password" style={{...S.inp,paddingRight:"42px"}}/>
-                <button onClick={()=>setUserReveal(p=>!p)} style={{position:"absolute",right:"10px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#94a3b8",fontSize:"16px"}}>{userReveal?"🙈":"👁️"}</button>
-              </div>
-            </div>
-            <div style={{marginBottom:"22px"}}>
-              <label style={S.lbl}>Team / Role</label>
-              <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
-                {ALL_TEAM_OPTIONS.map(team=>{ const b=teamBadge[team]||teamBadge.engineering; const a=userForm.team===team; return (
-                  <button key={team} onClick={()=>setUserForm(f=>({...f,team}))} style={{padding:"6px 14px",borderRadius:"20px",border:`2px solid ${a?b.border:"#e5e9f0"}`,background:a?b.bg:"white",color:a?b.text:"#64748b",fontSize:"12px",fontWeight:a?"700":"400",cursor:"pointer"}}>
-                    {team==="admin"?"🔧 ":""}{team}
-                  </button>
-                );})}
-              </div>
-            </div>
-            <div style={{display:"flex",gap:"10px"}}>
-              <button onClick={()=>setShowUserModal(false)} style={{...S.btn,flex:1,background:"#f8fafc",border:"1px solid #e5e9f0",color:"#475569"}}>Cancel</button>
-              <button onClick={saveUser} disabled={!userForm.name.trim()||!userForm.username.trim()||!userForm.password.trim()} style={{...S.btn,flex:2,background:userForm.name&&userForm.username&&userForm.password?"linear-gradient(135deg,#f59e0b,#d97706)":"#e5e9f0",color:userForm.name&&userForm.username&&userForm.password?"#0f172a":"#94a3b8",fontWeight:"700"}}>
-                {editingUser?"Save Changes":"Add User"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── DELETE CRED CONFIRM ───────────────────────────────────────────── */}
-      {delCred&&(
-        <div style={S.overlay}>
-          <div style={{background:"white",borderRadius:"16px",padding:"28px",maxWidth:"380px",width:"90%",textAlign:"center"}}>
-            <div style={{fontSize:"40px",marginBottom:"12px"}}>⚠️</div>
-            <h3 style={{margin:"0 0 8px",fontSize:"17px",fontWeight:"700",color:"#0f172a"}}>Delete credential?</h3>
-            <p style={{color:"#64748b",fontSize:"14px",margin:"0 0 22px"}}>This will permanently remove <strong>"{credentials.find(c=>c.id===delCred)?.portal}"</strong>.</p>
-            <div style={{display:"flex",gap:"10px"}}>
-              <button onClick={()=>setDelCred(null)} style={{...S.btn,flex:1,background:"#f8fafc",border:"1px solid #e5e9f0",color:"#475569"}}>Cancel</button>
-              <button onClick={()=>deleteCred(delCred)} style={{...S.btn,flex:1,background:"#ef4444",color:"white",fontWeight:"700"}}>Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── DELETE USER CONFIRM ───────────────────────────────────────────── */}
-      {delUser&&(
-        <div style={S.overlay}>
-          <div style={{background:"white",borderRadius:"16px",padding:"28px",maxWidth:"380px",width:"90%",textAlign:"center"}}>
-            <div style={{fontSize:"40px",marginBottom:"12px"}}>⚠️</div>
-            <h3 style={{margin:"0 0 8px",fontSize:"17px",fontWeight:"700",color:"#0f172a"}}>Remove user?</h3>
-            <p style={{color:"#64748b",fontSize:"14px",margin:"0 0 22px"}}><strong>{users.find(u=>u.id===delUser)?.name}</strong> will lose access to the vault immediately.</p>
-            <div style={{display:"flex",gap:"10px"}}>
-              <button onClick={()=>setDelUser(null)} style={{...S.btn,flex:1,background:"#f8fafc",border:"1px solid #e5e9f0",color:"#475569"}}>Cancel</button>
-              <button onClick={()=>deleteUser(delUser)} style={{...S.btn,flex:1,background:"#ef4444",color:"white",fontWeight:"700"}}>Remove</button>
-            </div>
-          </div>
+      {isFirstVisit && seeded && (
+        <div style={{ marginTop:24, background:"#0f1a2e", borderRadius:16, padding:24,
+          width:"100%", maxWidth:520, border:"1px solid rgba(245,158,11,0.2)" }}>
+          <h3 style={{ color:"#f59e0b", fontSize:14, fontWeight:700, marginBottom:12 }}>Demo Credentials</h3>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+            <thead><tr>
+              {["Role","Username","Password"].map(h=>(
+                <th key={h} style={{ color:"#64748b", fontWeight:600, textAlign:"left",
+                  padding:"6px 8px", borderBottom:"1px solid rgba(255,255,255,0.08)" }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {DEMO.map(d=>(
+                <tr key={d.username}>
+                  <td style={{ color:"#94a3b8", padding:"6px 8px" }}>{d.role}</td>
+                  <td style={{ color:"#e2e8f0", padding:"6px 8px", fontFamily:"monospace" }}>{d.username}</td>
+                  <td style={{ color:"#e2e8f0", padding:"6px 8px", fontFamily:"monospace" }}>{d.password}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   );
+}
+
+// ─── TOTP Screen ──────────────────────────────────────────────────────────────
+function TOTPScreen({ user, onVerify, onBack }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+
+  const handleVerify = () => {
+    setError("");
+    const secret = OTPAuth.Secret.fromBase32(user.twoFactorSecret);
+    const totp = new OTPAuth.TOTP({ issuer:"VaultAccess", label:user.username,
+      algorithm:"SHA1", digits:6, period:30, secret });
+    const valid = totp.validate({ token:code.trim(), window:1 }) !== null;
+    if (!valid) { setError("Invalid code. Please try again."); return; }
+    setSession({ userId:user.id, userName:user.name, team:user.team,
+      loginAt:new Date().toISOString(), lastActivityAt:new Date().toISOString() });
+    addAudit({ userId:user.id, userName:user.name, action:"login" });
+    onVerify(user);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#060d1a", display:"flex",
+      alignItems:"center", justifyContent:"center", padding:20 }}>
+      <div style={{ background:"#0f1a2e", borderRadius:20, padding:40, width:"100%", maxWidth:380,
+        boxShadow:"0 20px 60px rgba(0,0,0,0.5)", border:"1px solid rgba(245,158,11,0.15)" }}>
+        <div style={{ textAlign:"center", marginBottom:24 }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>🔒</div>
+          <h2 style={{ color:"#fff", fontSize:20, fontWeight:700 }}>Two-Factor Authentication</h2>
+          <p style={{ color:"#64748b", fontSize:13, marginTop:6 }}>
+            Enter the 6-digit code from your authenticator app
+          </p>
+        </div>
+        <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))}
+          style={{ ...S.input(), background:"rgba(255,255,255,0.05)", color:"#fff",
+            border:"1px solid rgba(255,255,255,0.12)", textAlign:"center", fontSize:24,
+            letterSpacing:8, marginBottom:12 }}
+          placeholder="000000" maxLength={6} />
+        {error && <div style={{ color:"#fca5a5", fontSize:13, marginBottom:12, textAlign:"center" }}>{error}</div>}
+        <button onClick={handleVerify} style={{ ...S.btn("primary"), width:"100%", padding:12,
+          fontSize:15, marginBottom:12, justifyContent:"center" }}>Verify</button>
+        <button onClick={onBack} style={{ background:"none", border:"none", cursor:"pointer",
+          color:"#64748b", fontSize:13, width:"100%", textAlign:"center" }}>
+          ← Back to login
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Inactivity Modal ─────────────────────────────────────────────────────────
+function InactivityModal({ countdown, onStay, onLogout }) {
+  return (
+    <div style={S.overlay}>
+      <div style={{ background:"#fff", borderRadius:16, padding:32, maxWidth:380,
+        width:"90%", textAlign:"center" }}>
+        <div style={{ fontSize:40, marginBottom:12 }}>⏰</div>
+        <h3 style={{ fontSize:18, fontWeight:700, color:"#0f172a", marginBottom:8 }}>Session Expiring</h3>
+        <p style={{ color:"#64748b", marginBottom:20, fontSize:14 }}>
+          You will be logged out in{" "}
+          <strong style={{ color:"#dc2626" }}>{countdown}s</strong> due to inactivity.
+        </p>
+        <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+          <button onClick={onStay} style={S.btn("primary")}>Stay Logged In</button>
+          <button onClick={onLogout} style={S.btn("danger")}>Log Out</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Credential Card ──────────────────────────────────────────────────────────
+function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, isFav,
+  requests, onRequestAccess, toast, onReload }) {
+  const [showPw, setShowPw] = useState(false);
+  const hasAccess = canAccess(cred, session.team);
+  const isAdmin = session.team === "admin";
+  const age = daysSince(cred.updatedAt);
+  const ageColor = age < 30 ? "#16a34a" : age < 60 ? "#f59e0b" : "#dc2626";
+  const catIcon = CAT_ICONS[cred.category] || CAT_ICONS.Default;
+  const pendingReq = requests.find(r =>
+    r.credentialId===cred.id && r.requesterId===session.userId && r.status==="pending");
+  const expiryDays = cred.passwordExpiryDays || 90;
+  const daysLeft = expiryDays - age;
+
+  const handleCopyField = (value, field) => {
+    if (!hasAccess) return;
+    navigator.clipboard.writeText(value).then(() => {
+      onCopy && onCopy(cred, field);
+      toast && toast(field + " copied!", "success");
+    });
+  };
+
+  return (
+    <div style={{ ...S.card(), display:"flex", flexDirection:"column", gap:12 }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4, flexWrap:"wrap" }}>
+            <span style={{ fontSize:18 }}>{catIcon}</span>
+            <span style={{ fontWeight:700, fontSize:15, color:"#0f172a" }}>{cred.portal}</span>
+            {cred.needsRotation && (
+              <span style={{ background:"#fee2e2", color:"#dc2626", border:"1px solid #fca5a5",
+                borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:700 }}>Needs Rotation</span>
+            )}
+          </div>
+          <a href={"https://"+cred.url} target="_blank" rel="noreferrer"
+            style={{ color:"#64748b", fontSize:12, textDecoration:"none" }}>
+            🔗 {cred.url}
+          </a>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+          <span style={{ background:"#f1f5f9", color:"#64748b", borderRadius:20,
+            padding:"3px 10px", fontSize:11, fontWeight:600 }}>{cred.category}</span>
+          <button onClick={()=>onFavToggle(cred.id)}
+            style={{ background:"none", border:"none", cursor:"pointer", fontSize:20,
+              color:isFav?"#f59e0b":"#d1d5db", padding:0 }}>★</button>
+        </div>
+      </div>
+
+      {/* Username */}
+      <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px" }}>
+        <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2, fontWeight:600 }}>USERNAME</div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+          <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace",
+            wordBreak:"break-all", flex:1 }}>{cred.username}</code>
+          {hasAccess && (
+            <button onClick={()=>handleCopyField(cred.username,"Username")}
+              style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, flexShrink:0 }}>Copy</button>
+          )}
+        </div>
+      </div>
+
+      {/* Password */}
+      <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px" }}>
+        <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2, fontWeight:600 }}>PASSWORD</div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+          {hasAccess ? (
+            <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace",
+              flex:1, wordBreak:"break-all" }}>
+              {showPw ? cred.password : "•".repeat(Math.min(cred.password.length, 16))}
+            </code>
+          ) : (
+            <span style={{ fontSize:13, color:"#94a3b8", flex:1 }}>No access</span>
+          )}
+          {hasAccess && (
+            <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+              <button onClick={()=>setShowPw(p=>!p)}
+                style={{ ...S.btn("ghost"), padding:"4px 8px", fontSize:12 }}>
+                {showPw?"Hide":"Show"}
+              </button>
+              <button onClick={()=>handleCopyField(cred.password,"Password")}
+                style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>Copy</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Age / Expiry */}
+      <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, flexWrap:"wrap" }}>
+        <span style={{ width:8, height:8, borderRadius:"50%", background:ageColor, display:"inline-block" }}/>
+        <span style={{ color:ageColor, fontWeight:600 }}>{age}d old</span>
+        <span style={{ color:"#94a3b8" }}>·</span>
+        <span style={{ color:daysLeft<=0?"#dc2626":daysLeft<=7?"#f59e0b":"#94a3b8" }}>
+          {daysLeft<=0 ? "Expired" : daysLeft+"d until expiry"}
+        </span>
+      </div>
+
+      {/* Teams */}
+      <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+        {cred.teams==="all"
+          ? <span style={{ background:"#f0fdf4", color:"#166534", border:"1px solid #bbf7d0",
+              borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>All Teams</span>
+          : (cred.teams||[]).map(t=><TeamBadge key={t} team={t} small />)
+        }
+      </div>
+
+      {/* Footer */}
+      <div style={{ fontSize:11, color:"#94a3b8", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
+        Added {timeAgo(cred.addedAt)} by {cred.addedBy}
+      </div>
+
+      {/* Admin controls */}
+      {isAdmin && (
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
+          <button onClick={()=>onEdit(cred)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>
+            ✏️ Edit
+          </button>
+          <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"4px 10px", fontSize:12 }}>
+            🗑️ Delete
+          </button>
+          <button onClick={()=>{
+            const all = getLS(LS.CREDS, []);
+            setLS(LS.CREDS, all.map(c=>c.id===cred.id?{...c,needsRotation:!c.needsRotation}:c));
+            toast && toast("Rotation flag updated","info");
+            onReload && onReload();
+          }} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12,
+            color:cred.needsRotation?"#dc2626":"#64748b" }}>
+            🔄 {cred.needsRotation?"Clear Rotation":"Flag Rotation"}
+          </button>
+          <select value={cred.passwordExpiryDays||90} onChange={e=>{
+            const all=getLS(LS.CREDS,[]);
+            setLS(LS.CREDS,all.map(c=>c.id===cred.id?{...c,passwordExpiryDays:+e.target.value}:c));
+            toast&&toast("Expiry updated","success");
+            onReload&&onReload();
+          }} style={{ ...S.input(), width:"auto", padding:"4px 8px", fontSize:12 }}>
+            {[30,60,90,180].map(d=><option key={d} value={d}>{d}d expiry</option>)}
+          </select>
+        </div>
+      )}
+
+      {/* Request access */}
+      {!hasAccess && session.team!=="admin" && (
+        <div style={{ borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
+          {pendingReq
+            ? <span style={{ background:"#fef3c7", color:"#92400e", border:"1px solid #fde68a",
+                borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:600 }}>
+                Request Pending
+              </span>
+            : <button onClick={()=>onRequestAccess(cred)}
+                style={{ ...S.btn("ghost"), fontSize:12, color:"#2563eb", borderColor:"#bfdbfe" }}>
+                🔑 Request Access
+              </button>
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Credential Modal ─────────────────────────────────────────────────────────
+function CredModal({ cred, onSave, onClose, session }) {
+  const [form, setForm] = useState(cred ? { ...cred, teamsStr: cred.teams==="all"?"":
+    (Array.isArray(cred.teams)?cred.teams.join(","):"") }
+    : { portal:"", url:"", username:"", password:"", category:"Development",
+        teams:[], passwordExpiryDays:90, needsRotation:false, rotationNote:"" });
+  const [teamsAll, setTeamsAll] = useState(!!(cred && cred.teams==="all"));
+  const [selTeams, setSelTeams] = useState(
+    cred && Array.isArray(cred.teams) ? cred.teams : []);
+
+  const set = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  const toggleTeam = t => setSelTeams(p => p.includes(t)?p.filter(x=>x!==t):[...p,t]);
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    if (!form.portal.trim()||!form.username.trim()||!form.password.trim()) return;
+    const now = new Date().toISOString();
+    const rec = { ...form, teams:teamsAll?"all":selTeams,
+      updatedAt:now, addedBy:cred?.addedBy||session.userName,
+      addedAt:cred?.addedAt||now };
+    if (!rec.id) rec.id = getId();
+    delete rec.teamsStr;
+    onSave(rec);
+  };
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:540,
+        maxHeight:"90vh", overflowY:"auto" }}>
+        <h3 style={{ fontWeight:700, marginBottom:20, color:"#0f172a" }}>
+          {cred?"Edit Credential":"Add Credential"}
+        </h3>
+        <form onSubmit={handleSubmit}>
+          {[["Portal Name","portal",true],["URL","url",false],["Username","username",true]].map(([lbl,key,req])=>(
+            <div key={key} style={{ marginBottom:14 }}>
+              <label style={S.label}>{lbl}</label>
+              <input value={form[key]||""} onChange={e=>set(key,e.target.value)}
+                style={S.input()} required={req} />
+            </div>
+          ))}
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Password</label>
+            <input value={form.password||""} onChange={e=>set("password",e.target.value)}
+              style={S.input()} required />
+            <StrengthBar password={form.password} />
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Category</label>
+            <select value={form.category||"Development"} onChange={e=>set("category",e.target.value)} style={S.input()}>
+              {["Development","Infrastructure","Design","Marketing","Communication"].map(c=>(
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Team Access</label>
+            <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:13 }}>
+              <input type="checkbox" checked={teamsAll} onChange={e=>setTeamsAll(e.target.checked)} />
+              All Teams
+            </label>
+            {!teamsAll && (
+              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                {TEAMS.filter(t=>t!=="admin").map(t=>(
+                  <label key={t} style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer",
+                    padding:"4px 12px", border:"1px solid "+(selTeams.includes(t)?"#3b82f6":"#e5e9f0"),
+                    borderRadius:20, fontSize:12,
+                    background:selTeams.includes(t)?"#dbeafe":"#f8fafc" }}>
+                    <input type="checkbox" checked={selTeams.includes(t)}
+                      onChange={()=>toggleTeam(t)} style={{ display:"none" }} />
+                    {t}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ marginBottom:20 }}>
+            <label style={S.label}>Expiry Days</label>
+            <select value={form.passwordExpiryDays||90} onChange={e=>set("passwordExpiryDays",+e.target.value)} style={S.input()}>
+              {[30,60,90,180].map(d=><option key={d} value={d}>{d} days</option>)}
+            </select>
+          </div>
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+            <button type="button" onClick={onClose} style={S.btn("ghost")}>Cancel</button>
+            <button type="submit" style={S.btn("primary")}>{cred?"Save Changes":"Add Credential"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── User Modal ───────────────────────────────────────────────────────────────
+function UserModal({ user, onSave, onClose }) {
+  const [form, setForm] = useState(user
+    ? { name:user.name, username:user.username, team:user.team, password:"" }
+    : { name:"", username:"", password:"", team:"engineering" });
+  const set = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    if (!form.name||!form.username||(!user&&!form.password)) return;
+    const now = new Date().toISOString();
+    const rec = user ? {
+      ...user, name:form.name, username:form.username.toLowerCase(), team:form.team,
+      avatar:form.name.split(" ").map(p=>p[0]).join("").toUpperCase().slice(0,2),
+      ...(form.password?{passwordHash:bcrypt.hashSync(form.password,8)}:{})
+    } : {
+      id:getId(), name:form.name, username:form.username.toLowerCase(),
+      passwordHash:bcrypt.hashSync(form.password,8), team:form.team,
+      avatar:form.name.split(" ").map(p=>p[0]).join("").toUpperCase().slice(0,2),
+      createdAt:now, lastLoginAt:null, twoFactorEnabled:false, twoFactorSecret:"",
+      failedLoginAttempts:0, lockedUntil:null,
+    };
+    onSave(rec);
+  };
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:460, maxHeight:"90vh", overflowY:"auto" }}>
+        <h3 style={{ fontWeight:700, marginBottom:20, color:"#0f172a" }}>{user?"Edit User":"Add User"}</h3>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Full Name</label>
+            <input value={form.name} onChange={e=>set("name",e.target.value)} style={S.input()} required />
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Username</label>
+            <input value={form.username} onChange={e=>set("username",e.target.value)} style={S.input()} required />
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>{user?"New Password (blank = keep current)":"Password"}</label>
+            <input type="password" value={form.password} onChange={e=>set("password",e.target.value)}
+              style={S.input()} required={!user} />
+            {form.password && <StrengthBar password={form.password} />}
+          </div>
+          <div style={{ marginBottom:20 }}>
+            <label style={S.label}>Team</label>
+            <select value={form.team} onChange={e=>set("team",e.target.value)} style={S.input()}>
+              {TEAMS.map(t=><option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+            <button type="button" onClick={onClose} style={S.btn("ghost")}>Cancel</button>
+            <button type="submit" style={S.btn("primary")}>{user?"Save Changes":"Add User"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Reset Password Modal ─────────────────────────────────────────────────────
+function ResetPasswordModal({ user, onSave, onClose }) {
+  const [pw, setPw] = useState("");
+  const handleSave = () => {
+    if (!pw) return;
+    const users = getLS(LS.USERS, []);
+    setLS(LS.USERS, users.map(u=>u.id===user.id?{...u,passwordHash:bcrypt.hashSync(pw,8)}:u));
+    onSave&&onSave();
+    onClose();
+  };
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:400 }}>
+        <h3 style={{ fontWeight:700, marginBottom:16, color:"#0f172a" }}>Reset Password: {user.name}</h3>
+        <label style={S.label}>New Password</label>
+        <input type="password" value={pw} onChange={e=>setPw(e.target.value)}
+          style={{ ...S.input(), marginBottom:8 }} autoFocus />
+        <StrengthBar password={pw} />
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:20 }}>
+          <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
+          <button onClick={handleSave} style={S.btn("primary")}>Reset Password</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Request Access Modal ─────────────────────────────────────────────────────
+function RequestAccessModal({ cred, session, onClose, toast }) {
+  const [message, setMessage] = useState("");
+  const handleSubmit = () => {
+    const requests = getLS(LS.REQUESTS, []);
+    const req = { id:getId(), requesterId:session.userId, requesterName:session.userName,
+      requesterTeam:session.team, credentialId:cred.id, credentialName:cred.portal,
+      message, status:"pending", requestedAt:new Date().toISOString() };
+    setLS(LS.REQUESTS, [...requests, req]);
+    addAudit({ userId:session.userId, userName:session.userName, action:"access_request",
+      credentialId:cred.id, credentialName:cred.portal });
+    toast("Access request submitted!","success");
+    onClose();
+  };
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:420 }}>
+        <h3 style={{ fontWeight:700, marginBottom:8, color:"#0f172a" }}>Request Access</h3>
+        <p style={{ color:"#64748b", fontSize:14, marginBottom:16 }}>
+          Requesting access to: <strong>{cred.portal}</strong>
+        </p>
+        <label style={S.label}>Message (optional)</label>
+        <textarea value={message} onChange={e=>setMessage(e.target.value)}
+          style={{ ...S.input(), resize:"vertical", minHeight:80, marginBottom:16 }}
+          placeholder="Why do you need access?" />
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
+          <button onClick={handleSubmit} style={S.btn("primary")}>Submit Request</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Import Preview Modal ─────────────────────────────────────────────────────
+function ImportPreviewModal({ rows, existingCreds, onConfirm, onClose }) {
+  const processed = rows.map(r => {
+    const errors = [];
+    if (!r.Portal) errors.push("Missing Portal");
+    if (!r.Username) errors.push("Missing Username");
+    if (!r.Password) errors.push("Missing Password");
+    const isDup = existingCreds.some(c=>c.portal===r.Portal);
+    const status = errors.length>0?"error":isDup?"duplicate":"valid";
+    return { ...r, _status:status, _errors:errors };
+  });
+  const valid = processed.filter(r=>r._status==="valid").length;
+  const errs = processed.filter(r=>r._status==="error").length;
+  const dups = processed.filter(r=>r._status==="duplicate").length;
+
+  return (
+    <div style={S.overlay}>
+      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"95vw", maxWidth:780,
+        maxHeight:"90vh", overflowY:"auto" }}>
+        <h3 style={{ fontWeight:700, marginBottom:8 }}>Import Preview</h3>
+        <p style={{ color:"#64748b", fontSize:13, marginBottom:16 }}>
+          <span style={{ color:"#16a34a" }}>✓ {valid} valid</span>{"  ·  "}
+          <span style={{ color:"#f59e0b" }}>⚠ {dups} duplicate</span>{"  ·  "}
+          <span style={{ color:"#dc2626" }}>✗ {errs} error</span>
+        </p>
+        <div style={{ maxHeight:340, overflowY:"auto", marginBottom:16 }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+            <thead>
+              <tr>{["Status","Portal","URL","Username","Category","Teams"].map(h=>(
+                <th key={h} style={{ background:"#f8fafc", padding:"8px 10px", textAlign:"left",
+                  borderBottom:"1px solid #e5e9f0", fontWeight:600, color:"#64748b",
+                  position:"sticky", top:0 }}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {processed.map((r,i)=>(
+                <tr key={i} style={{ background:r._status==="valid"?"#f0fdf4":
+                  r._status==="error"?"#fef2f2":"#fffbeb" }}>
+                  <td style={{ padding:"6px 10px", fontWeight:600,
+                    color:r._status==="valid"?"#16a34a":r._status==="error"?"#dc2626":"#92400e" }}>
+                    {r._status==="valid"?"✓":r._status==="error"?("✗ "+r._errors.join(",")):"⚠ Dup"}
+                  </td>
+                  <td style={{ padding:"6px 10px" }}>{r.Portal}</td>
+                  <td style={{ padding:"6px 10px" }}>{r.URL}</td>
+                  <td style={{ padding:"6px 10px" }}>{r.Username}</td>
+                  <td style={{ padding:"6px 10px" }}>{r.Category}</td>
+                  <td style={{ padding:"6px 10px" }}>{r.Teams}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
+          <button onClick={()=>onConfirm(processed)} style={S.btn("primary")}>
+            Import {valid} Valid Row(s)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── 2FA Setup ────────────────────────────────────────────────────────────────
+function TwoFASetup({ user, onDone, toast }) {
+  const [step, setStep] = useState(1);
+  const [secret, setSecret] = useState(null);
+  const [totpObj, setTotpObj] = useState(null);
+  const [qrUrl, setQrUrl] = useState("");
+  const [code, setCode] = useState("");
+
+  useEffect(() => {
+    const s = new OTPAuth.Secret();
+    const t = new OTPAuth.TOTP({ issuer:"VaultAccess", label:user.username,
+      algorithm:"SHA1", digits:6, period:30, secret:s });
+    setSecret(s);
+    setTotpObj(t);
+    QRCode.toDataURL(t.toString()).then(url=>setQrUrl(url));
+  }, [user.username]);
+
+  const handleVerify = () => {
+    if (!totpObj) return;
+    const valid = totpObj.validate({ token:code.trim(), window:1 }) !== null;
+    if (!valid) { toast("Invalid code","error"); return; }
+    const users = getLS(LS.USERS, []);
+    setLS(LS.USERS, users.map(u=>u.id===user.id
+      ?{...u,twoFactorEnabled:true,twoFactorSecret:secret.base32}:u));
+    toast("2FA enabled!","success");
+    onDone({ ...user, twoFactorEnabled:true, twoFactorSecret:secret.base32 });
+  };
+
+  return (
+    <div>
+      {step===1 && (
+        <>
+          <p style={{ fontSize:13, color:"#64748b", marginBottom:12 }}>
+            Scan this QR code with Google Authenticator, Authy, or similar.
+          </p>
+          {qrUrl && <img src={qrUrl} alt="QR" style={{ borderRadius:8, marginBottom:12, display:"block" }} />}
+          <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px", marginBottom:12 }}>
+            <div style={{ fontSize:11, color:"#94a3b8", marginBottom:4, fontWeight:600 }}>MANUAL KEY</div>
+            <code style={{ fontSize:12, wordBreak:"break-all" }}>{secret?.base32}</code>
+          </div>
+          <button onClick={()=>setStep(2)} style={S.btn("primary")}>Next →</button>
+        </>
+      )}
+      {step===2 && (
+        <>
+          <p style={{ fontSize:13, color:"#64748b", marginBottom:12 }}>
+            Enter the 6-digit code to verify setup.
+          </p>
+          <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))}
+            style={{ ...S.input(), textAlign:"center", fontSize:20, letterSpacing:6, marginBottom:12 }}
+            placeholder="000000" maxLength={6} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={()=>setStep(1)} style={S.btn("ghost")}>Back</button>
+            <button onClick={handleVerify} style={S.btn("primary")}>Verify & Enable</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Profile Panel ────────────────────────────────────────────────────────────
+function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copyHistory }) {
+  const [section, setSection] = useState("main");
+  const [cpForm, setCpForm] = useState({ current:"", newPw:"", confirm:"" });
+  const [cpError, setCpError] = useState("");
+  const myRequests = getLS(LS.REQUESTS, []).filter(r=>r.requesterId===session.userId);
+
+  const handleChangePw = () => {
+    setCpError("");
+    if (!bcrypt.compareSync(cpForm.current, currentUser.passwordHash)) {
+      setCpError("Current password incorrect."); return;
+    }
+    if (cpForm.newPw!==cpForm.confirm) { setCpError("Passwords don't match."); return; }
+    if (cpForm.newPw.length<6) { setCpError("Password too short."); return; }
+    const users = getLS(LS.USERS, []);
+    setLS(LS.USERS, users.map(u=>u.id===currentUser.id
+      ?{...u,passwordHash:bcrypt.hashSync(cpForm.newPw,8)}:u));
+    toast("Password changed!","success");
+    setCpForm({ current:"", newPw:"", confirm:"" });
+  };
+
+  const disable2FA = () => {
+    const users = getLS(LS.USERS, []);
+    setLS(LS.USERS, users.map(u=>u.id===currentUser.id
+      ?{...u,twoFactorEnabled:false,twoFactorSecret:""}:u));
+    onUserUpdate({ ...currentUser, twoFactorEnabled:false, twoFactorSecret:"" });
+    toast("2FA disabled","info");
+  };
+
+  return (
+    <div style={{ position:"fixed", right:0, top:0, bottom:0, width:380, background:"#fff",
+      boxShadow:"-8px 0 32px rgba(0,0,0,0.12)", zIndex:500, overflowY:"auto",
+      display:"flex", flexDirection:"column" }}>
+      <div style={{ background:"linear-gradient(135deg,#0a0f1e,#1e293b)", padding:24, color:"#fff" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <span style={{ fontWeight:700, fontSize:16 }}>Profile</span>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer",
+            color:"#94a3b8", fontSize:20, padding:0 }}>✕</button>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+          <div style={{ width:52, height:52, borderRadius:"50%",
+            background:"linear-gradient(135deg,#f59e0b,#d97706)",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            fontWeight:800, fontSize:18, color:"#fff" }}>{currentUser.avatar}</div>
+          <div>
+            <div style={{ fontWeight:700, fontSize:16 }}>{currentUser.name}</div>
+            <div style={{ color:"#94a3b8", fontSize:13 }}>@{currentUser.username}</div>
+            <div style={{ marginTop:4 }}><TeamBadge team={currentUser.team} small /></div>
+          </div>
+        </div>
+        <div style={{ marginTop:10, color:"#64748b", fontSize:12 }}>
+          Last login: {fmtDate(currentUser.lastLoginAt)}
+        </div>
+      </div>
+
+      <div style={{ padding:20, flex:1 }}>
+        {/* Change Password */}
+        <div style={{ marginBottom:24 }}>
+          <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:12, fontSize:14 }}>Change Password</h4>
+          {[["Current Password","current"],["New Password","newPw"],["Confirm New","confirm"]].map(([lbl,key])=>(
+            <div key={key} style={{ marginBottom:10 }}>
+              <label style={S.label}>{lbl}</label>
+              <input type="password" value={cpForm[key]}
+                onChange={e=>setCpForm(p=>({...p,[key]:e.target.value}))} style={S.input()} />
+            </div>
+          ))}
+          {cpForm.newPw && <StrengthBar password={cpForm.newPw} />}
+          {cpError && <p style={{ color:"#dc2626", fontSize:13, marginTop:6 }}>{cpError}</p>}
+          <button onClick={handleChangePw} style={{ ...S.btn("primary"), marginTop:10 }}>
+            Update Password
+          </button>
+        </div>
+
+        {/* Copy History */}
+        {copyHistory.length>0 && (
+          <div style={{ marginBottom:24 }}>
+            <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:10, fontSize:14 }}>Recent Copies</h4>
+            {copyHistory.map((item,i)=>(
+              <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                padding:"8px 12px", background:"#f8fafc", borderRadius:8, marginBottom:6, fontSize:13 }}>
+                <span><strong>{item.portal}</strong> · {item.field}</span>
+                <span style={{ color:"#94a3b8", fontSize:11 }}>{timeAgo(item.time)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 2FA */}
+        <div style={{ marginBottom:24 }}>
+          <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:10, fontSize:14 }}>Two-Factor Authentication</h4>
+          {currentUser.twoFactorEnabled ? (
+            <div>
+              <div style={{ color:"#16a34a", fontWeight:600, fontSize:13, marginBottom:10 }}>✓ Enabled</div>
+              <button onClick={disable2FA} style={S.btn("danger")}>Disable 2FA</button>
+            </div>
+          ) : (
+            <div>
+              <p style={{ color:"#64748b", fontSize:13, marginBottom:10 }}>2FA is not enabled.</p>
+              {section==="2fa"
+                ? <TwoFASetup user={currentUser} toast={toast}
+                    onDone={u=>{ onUserUpdate(u); setSection("main"); }} />
+                : <button onClick={()=>setSection("2fa")} style={S.btn("primary")}>Setup 2FA</button>
+              }
+            </div>
+          )}
+        </div>
+
+        {/* My Requests */}
+        {myRequests.length>0 && (
+          <div>
+            <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:10, fontSize:14 }}>My Access Requests</h4>
+            {myRequests.map(r=>(
+              <div key={r.id} style={{ padding:"10px 12px", background:"#f8fafc", borderRadius:8,
+                marginBottom:8, fontSize:13 }}>
+                <div style={{ fontWeight:600 }}>{r.credentialName}</div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
+                  <span style={{ color:"#64748b" }}>{timeAgo(r.requestedAt)}</span>
+                  <span style={{ padding:"2px 8px", borderRadius:20, fontSize:11, fontWeight:600,
+                    background:r.status==="pending"?"#fef3c7":r.status==="approved"?"#dcfce7":"#fee2e2",
+                    color:r.status==="pending"?"#92400e":r.status==="approved"?"#166534":"#dc2626" }}>
+                    {r.status}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Matrix View ──────────────────────────────────────────────────────────────
+function MatrixView({ creds, toast, onReload }) {
+  const teams = ["engineering","marketing","design","ops"];
+  const categories = [...new Set(creds.map(c=>c.category))];
+
+  const hasTeam = (cred, team) =>
+    cred.teams==="all"||(Array.isArray(cred.teams)&&cred.teams.includes(team));
+
+  const toggleCell = (cred, team) => {
+    if (!window.confirm("Toggle "+team+" access for "+cred.portal+"?")) return;
+    const all = getLS(LS.CREDS, []);
+    const updated = all.map(c => {
+      if (c.id!==cred.id) return c;
+      if (c.teams==="all") return { ...c, teams:teams.filter(t=>t!==team) };
+      const arr = Array.isArray(c.teams)?c.teams:[];
+      return { ...c, teams:arr.includes(team)?arr.filter(t=>t!==team):[...arr,team] };
+    });
+    setLS(LS.CREDS, updated);
+    toast("Access updated","success");
+    onReload&&onReload();
+  };
+
+  return (
+    <div style={{ overflowX:"auto" }}>
+      <table style={{ borderCollapse:"collapse", minWidth:600, fontSize:13 }}>
+        <thead>
+          <tr>
+            <th style={{ position:"sticky", left:0, background:"#fff", zIndex:2,
+              padding:"10px 14px", textAlign:"left", borderBottom:"2px solid #e5e9f0",
+              borderRight:"1px solid #e5e9f0", minWidth:200, fontWeight:700, color:"#0f172a" }}>
+              Credential
+            </th>
+            {teams.map(t=>(
+              <th key={t} style={{ padding:"10px 14px", textAlign:"center",
+                borderBottom:"2px solid #e5e9f0", minWidth:120, fontWeight:700 }}>
+                <TeamBadge team={t} />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {categories.map(cat=>(
+            <React.Fragment key={cat}>
+              <tr>
+                <td colSpan={teams.length+1} style={{ background:"#f8fafc", padding:"6px 14px",
+                  fontWeight:700, color:"#64748b", fontSize:11, letterSpacing:1 }}>
+                  {cat.toUpperCase()}
+                </td>
+              </tr>
+              {creds.filter(c=>c.category===cat).map(cred=>(
+                <tr key={cred.id} style={{ borderBottom:"1px solid #f1f5f9" }}>
+                  <td style={{ position:"sticky", left:0, background:"#fff",
+                    padding:"10px 14px", borderRight:"1px solid #e5e9f0", fontWeight:600 }}>
+                    {cred.portal}
+                  </td>
+                  {teams.map(t=>(
+                    <td key={t} style={{ padding:"10px 14px", textAlign:"center" }}>
+                      <button onClick={()=>toggleCell(cred,t)}
+                        style={{ background:hasTeam(cred,t)?"#dcfce7":"#f8fafc",
+                          border:"1px solid "+(hasTeam(cred,t)?"#bbf7d0":"#e5e9f0"),
+                          borderRadius:6, padding:"4px 14px", cursor:"pointer",
+                          color:hasTeam(cred,t)?"#166534":"#94a3b8", fontWeight:700 }}>
+                        {hasTeam(cred,t)?"✓":"–"}
+                      </button>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </React.Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Credentials Tab ──────────────────────────────────────────────────────────
+function CredentialsTab({ session, toast }) {
+  const [creds, setCreds] = useState(()=>getLS(LS.CREDS,[]));
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("All");
+  const [sort, setSort] = useState("A-Z");
+  const [editCred, setEditCred] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [deleteCred, setDeleteCred] = useState(null);
+  const [requestCred, setRequestCred] = useState(null);
+  const [importRows, setImportRows] = useState(null);
+  const [favs, setFavs] = useState(()=>{ const f=getLS(LS.FAVS,{}); return f[session.userId]||[]; });
+  const [recentViewed, setRecentViewed] = useState([]);
+  const [tick, setTick] = useState(0);
+
+  const reload = () => { setCreds(getLS(LS.CREDS,[])); setTick(p=>p+1); };
+  const requests = getLS(LS.REQUESTS, []);
+  const isAdmin = session.team==="admin";
+
+  const accessible = creds.filter(c=>canAccess(c,session.team));
+  const categories = ["All",...new Set(creds.map(c=>c.category))];
+
+  const rotationWarning = (isAdmin?creds:accessible).filter(c=>{
+    const age=daysSince(c.updatedAt);
+    return c.needsRotation||((c.passwordExpiryDays||90)-age)<=7;
+  });
+
+  const baseList = isAdmin?creds:accessible;
+  const filtered = baseList.filter(c=>{
+    const ms=!search||c.portal.toLowerCase().includes(search.toLowerCase())||
+      c.username.toLowerCase().includes(search.toLowerCase());
+    const mc=catFilter==="All"||c.category===catFilter;
+    return ms&&mc;
+  }).sort((a,b)=>{
+    if(sort==="A-Z") return a.portal.localeCompare(b.portal);
+    if(sort==="Newest") return new Date(b.addedAt)-new Date(a.addedAt);
+    if(sort==="Oldest") return new Date(a.addedAt)-new Date(b.addedAt);
+    if(sort==="Expiring Soon"){
+      return ((a.passwordExpiryDays||90)-daysSince(a.updatedAt))-
+             ((b.passwordExpiryDays||90)-daysSince(b.updatedAt));
+    }
+    return 0;
+  });
+
+  const pinned = filtered.filter(c=>favs.includes(c.id));
+  const unpinned = filtered.filter(c=>!favs.includes(c.id));
+
+  const handleCopy = (cred, field) => {
+    addAudit({ userId:session.userId, userName:session.userName, action:"copy",
+      credentialId:cred.id, credentialName:cred.portal, detail:"Copied "+field });
+    setRecentViewed(prev=>[cred,...prev.filter(c=>c.id!==cred.id)].slice(0,5));
+  };
+
+  const handleFavToggle = id => {
+    const allFavs=getLS(LS.FAVS,{});
+    const uf=allFavs[session.userId]||[];
+    const updated=uf.includes(id)?uf.filter(f=>f!==id):[...uf,id];
+    allFavs[session.userId]=updated;
+    setLS(LS.FAVS,allFavs);
+    setFavs(updated);
+  };
+
+  const handleSave = c => {
+    const all=getLS(LS.CREDS,[]);
+    const exists=all.find(x=>x.id===c.id);
+    setLS(LS.CREDS, exists?all.map(x=>x.id===c.id?c:x):[...all,c]);
+    addAudit({ userId:session.userId, userName:session.userName,
+      action:exists?"edit":"add", credentialId:c.id, credentialName:c.portal });
+    reload(); setEditCred(null); setShowAdd(false);
+    toast(exists?"Credential updated!":"Credential added!","success");
+  };
+
+  const handleDelete = c => {
+    const all=getLS(LS.CREDS,[]);
+    setLS(LS.CREDS,all.filter(x=>x.id!==c.id));
+    addAudit({ userId:session.userId, userName:session.userName, action:"delete",
+      credentialId:c.id, credentialName:c.portal });
+    reload(); setDeleteCred(null);
+    toast("Credential deleted","info");
+  };
+
+  const handleFileImport = e => {
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array"});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      setImportRows(XLSX.utils.sheet_to_json(ws,{defval:""}));
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value="";
+  };
+
+  const handleImportConfirm = processed => {
+    const valid=processed.filter(r=>r._status==="valid");
+    const now=new Date().toISOString();
+    const all=getLS(LS.CREDS,[]);
+    const newC=valid.map(r=>({
+      id:getId(), portal:r.Portal, url:r.URL||"", username:r.Username||"",
+      password:r.Password||"", category:r.Category||"Development",
+      teams:r.Teams==="all"?"all":(r.Teams||"").split(",").map(t=>t.trim()).filter(Boolean),
+      passwordExpiryDays:+(r["Expiry Days"])||90, needsRotation:false, rotationNote:"",
+      addedBy:session.userName, addedAt:now, updatedAt:now,
+    }));
+    setLS(LS.CREDS,[...all,...newC]);
+    addAudit({ userId:session.userId, userName:session.userName, action:"bulk_import",
+      detail:newC.length+" credentials imported" });
+    reload(); setImportRows(null);
+    const sk=processed.filter(r=>r._status==="duplicate").length;
+    const er=processed.filter(r=>r._status==="error").length;
+    toast(newC.length+" imported, "+sk+" skipped, "+er+" errors","success");
+  };
+
+  const handleExport = () => {
+    const all=getLS(LS.CREDS,[]);
+    const h=["Portal","URL","Username","Password","Category","Teams",
+      "Expiry Days","Days Since Updated","Needs Rotation","Added By","Added At"];
+    const rows=all.map(c=>[c.portal,c.url,c.username,c.password,c.category,
+      c.teams==="all"?"all":(c.teams||[]).join(","),
+      c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",c.addedBy,c.addedAt]);
+    const ws1=XLSX.utils.aoa_to_sheet([h,...rows]);
+    ws1["!cols"]=h.map(()=>({wch:20}));
+    const teams=["engineering","marketing","design","ops"];
+    const mh=["Credential",...teams];
+    const mr=all.map(c=>[c.portal,...teams.map(t=>
+      (c.teams==="all"||(Array.isArray(c.teams)&&c.teams.includes(t)))?"✓":"")]);
+    const ws2=XLSX.utils.aoa_to_sheet([mh,...mr]);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws1,"Credentials");
+    XLSX.utils.book_append_sheet(wb,ws2,"Access Matrix");
+    XLSX.writeFile(wb,"VaultAccess-Export.xlsx");
+    toast("Exported!","success");
+  };
+
+  const handleTemplate = () => {
+    const h=["Portal","URL","Username","Password","Category","Teams","Expiry Days"];
+    const ex=[
+      ["GitHub","github.com","user@example.com","password123","Development","engineering",90],
+      ["Figma","figma.com","design@co.com","figpass","Design","design,marketing",60],
+      ["Notion","notion.so","team@co.com","notionpw","Communication","all",90],
+    ];
+    const ws=XLSX.utils.aoa_to_sheet([h,...ex]);
+    ws["!cols"]=h.map(()=>({wch:22}));
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Template");
+    XLSX.writeFile(wb,"VaultAccess-Template.xlsx");
+    toast("Template downloaded!","success");
+  };
+
+  const stats = {
+    accessible: accessible.length,
+    categories: new Set(accessible.map(c=>c.category)).size,
+    team: accessible.filter(c=>c.teams!=="all"&&Array.isArray(c.teams)&&c.teams.includes(session.team)).length,
+    total: creds.length,
+  };
+
+  const StatCard = ({ val, label, color }) => (
+    <div style={{ background:color+"10", border:"1px solid "+color+"25",
+      borderRadius:12, padding:"14px 18px", flex:1, minWidth:100 }}>
+      <div style={{ fontSize:22, fontWeight:800, color }}>{val}</div>
+      <div style={{ fontSize:12, color:"#64748b", marginTop:2 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      {rotationWarning.length>0 && (
+        <div style={{ background:"#fffbeb", border:"1px solid #fde68a", borderRadius:10,
+          padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:18 }}>⚠️</span>
+          <span style={{ color:"#92400e", fontWeight:600, fontSize:14 }}>
+            {rotationWarning.length} credential(s) need rotation or expiring within 7 days.
+          </span>
+        </div>
+      )}
+
+      <div style={{ display:"flex", gap:12, marginBottom:20, flexWrap:"wrap" }}>
+        <StatCard val={stats.accessible} label="Accessible" color="#2563eb" />
+        <StatCard val={stats.categories} label="Categories" color="#16a34a" />
+        <StatCard val={stats.team} label={"Team ("+session.team+")"} color="#9333ea" />
+        {isAdmin && <StatCard val={stats.total} label="Total" color="#f59e0b" />}
+      </div>
+
+      {recentViewed.length>0 && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#64748b", marginBottom:8 }}>Recently Viewed</div>
+          <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:4 }}>
+            {recentViewed.map(c=>(
+              <div key={c.id} style={{ background:"#fff", border:"1px solid #e5e9f0",
+                borderRadius:10, padding:"8px 14px", whiteSpace:"nowrap",
+                fontSize:13, fontWeight:600, color:"#0f172a", flexShrink:0 }}>
+                {CAT_ICONS[c.category]||"🔑"} {c.portal}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {pinned.length>0 && (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#64748b", marginBottom:10 }}>⭐ Pinned</div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:16 }}>
+            {pinned.map(c=>(
+              <CredentialCard key={c.id} cred={c} session={session}
+                onEdit={setEditCred} onDelete={setDeleteCred}
+                onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={true}
+                requests={requests} onRequestAccess={setRequestCred}
+                toast={toast} onReload={reload} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          style={{ ...S.input(), maxWidth:280 }} placeholder="🔍 Search credentials..." />
+        <select value={sort} onChange={e=>setSort(e.target.value)} style={{ ...S.input(), width:"auto" }}>
+          {["A-Z","Newest","Oldest","Expiring Soon"].map(s=><option key={s}>{s}</option>)}
+        </select>
+      </div>
+
+      <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+        {categories.map(c=>(
+          <button key={c} onClick={()=>setCatFilter(c)}
+            style={{ ...S.btn(catFilter===c?"primary":"ghost"), padding:"6px 14px", fontSize:13 }}>
+            {c}
+          </button>
+        ))}
+      </div>
+
+      {isAdmin && (
+        <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+          <label style={{ ...S.btn("ghost"), cursor:"pointer" }}>
+            📥 Import Excel
+            <input type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFileImport} />
+          </label>
+          <button onClick={handleExport} style={S.btn("ghost")}>📤 Export Excel</button>
+          <button onClick={handleTemplate} style={S.btn("ghost")}>📋 Download Template</button>
+          <button onClick={()=>setShowAdd(true)} style={S.btn("primary")}>+ Add Credential</button>
+        </div>
+      )}
+
+      <div style={{ fontSize:13, color:"#64748b", marginBottom:12 }}>
+        {filtered.length} credential(s) found
+      </div>
+
+      {filtered.length===0 ? (
+        <div style={{ textAlign:"center", padding:40, color:"#94a3b8" }}>No credentials found.</div>
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:16 }}>
+          {unpinned.map(c=>(
+            <CredentialCard key={c.id} cred={c} session={session}
+              onEdit={setEditCred} onDelete={setDeleteCred}
+              onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={false}
+              requests={requests} onRequestAccess={setRequestCred}
+              toast={toast} onReload={reload} />
+          ))}
+        </div>
+      )}
+
+      {(editCred||showAdd) && (
+        <CredModal cred={editCred} onSave={handleSave}
+          onClose={()=>{ setEditCred(null); setShowAdd(false); }} session={session} />
+      )}
+      {deleteCred && (
+        <div style={S.overlay}>
+          <div style={{ background:"#fff", borderRadius:16, padding:28, maxWidth:380, textAlign:"center" }}>
+            <div style={{ fontSize:32, marginBottom:12 }}>🗑️</div>
+            <h3 style={{ fontWeight:700, marginBottom:8 }}>Delete "{deleteCred.portal}"?</h3>
+            <p style={{ color:"#64748b", fontSize:14, marginBottom:20 }}>This cannot be undone.</p>
+            <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+              <button onClick={()=>setDeleteCred(null)} style={S.btn("ghost")}>Cancel</button>
+              <button onClick={()=>handleDelete(deleteCred)} style={S.btn("danger")}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {requestCred && (
+        <RequestAccessModal cred={requestCred} session={session}
+          onClose={()=>setRequestCred(null)} toast={toast} />
+      )}
+      {importRows && (
+        <ImportPreviewModal rows={importRows} existingCreds={creds}
+          onConfirm={handleImportConfirm} onClose={()=>setImportRows(null)} />
+      )}
+    </div>
+  );
+}
+
+// ─── Users Tab ────────────────────────────────────────────────────────────────
+function UsersTab({ session, toast }) {
+  const [users, setUsers] = useState(()=>getLS(LS.USERS,[]));
+  const [search, setSearch] = useState("");
+  const [teamFilter, setTeamFilter] = useState("All");
+  const [showAdd, setShowAdd] = useState(false);
+  const [editUser, setEditUser] = useState(null);
+  const [resetUser, setResetUser] = useState(null);
+  const [matrixView, setMatrixView] = useState(false);
+  const [creds, setCreds] = useState(()=>getLS(LS.CREDS,[]));
+
+  const reload = () => { setUsers(getLS(LS.USERS,[])); setCreds(getLS(LS.CREDS,[])); };
+  const adminCount = users.filter(u=>u.team==="admin").length;
+
+  const filtered = users.filter(u=>{
+    const ms=!search||u.name.toLowerCase().includes(search.toLowerCase())||
+      u.username.toLowerCase().includes(search.toLowerCase());
+    const mt=teamFilter==="All"||u.team===teamFilter;
+    return ms&&mt;
+  });
+
+  const handleSave = u => {
+    const all=getLS(LS.USERS,[]);
+    const exists=all.find(x=>x.id===u.id);
+    setLS(LS.USERS,exists?all.map(x=>x.id===u.id?u:x):[...all,u]);
+    addAudit({ userId:session.userId, userName:session.userName,
+      action:exists?"edit_user":"add_user", targetUserId:u.id });
+    reload(); setShowAdd(false); setEditUser(null);
+    toast(exists?"User updated!":"User added!","success");
+  };
+
+  const handleRemove = u => {
+    if(u.id===session.userId){ toast("Cannot remove yourself","error"); return; }
+    if(u.team==="admin"&&adminCount<=1){ toast("Cannot remove last admin","error"); return; }
+    if(!window.confirm("Remove "+u.name+"?")) return;
+    setLS(LS.USERS,getLS(LS.USERS,[]).filter(x=>x.id!==u.id));
+    addAudit({ userId:session.userId, userName:session.userName, action:"remove_user", targetUserId:u.id });
+    reload(); toast("User removed","info");
+  };
+
+  const handleToggle2FA = u => {
+    const all=getLS(LS.USERS,[]);
+    setLS(LS.USERS,all.map(x=>x.id===u.id?{...x,twoFactorEnabled:!x.twoFactorEnabled,twoFactorSecret:""}:x));
+    reload(); toast("2FA "+(u.twoFactorEnabled?"disabled":"enabled")+" for "+u.name,"info");
+  };
+
+  return (
+    <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+        marginBottom:16, flexWrap:"wrap", gap:10 }}>
+        <div style={{ fontWeight:700, color:"#0f172a", fontSize:18 }}>
+          Users <span style={{ color:"#94a3b8", fontSize:14, fontWeight:400 }}>({users.length})</span>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button onClick={()=>setMatrixView(p=>!p)} style={S.btn(matrixView?"primary":"ghost")}>
+            {matrixView?"List View":"Matrix View"}
+          </button>
+          <button onClick={()=>setShowAdd(true)} style={S.btn("primary")}>+ Add User</button>
+        </div>
+      </div>
+
+      {matrixView ? (
+        <MatrixView creds={creds} toast={toast} onReload={reload} />
+      ) : (
+        <>
+          <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap" }}>
+            <input value={search} onChange={e=>setSearch(e.target.value)}
+              style={{ ...S.input(), maxWidth:260 }} placeholder="🔍 Search users..." />
+          </div>
+          <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+            {["All",...TEAMS].map(t=>(
+              <button key={t} onClick={()=>setTeamFilter(t)}
+                style={{ ...S.btn(teamFilter===t?"primary":"ghost"), padding:"6px 14px", fontSize:13 }}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:16 }}>
+            {filtered.map(u=>{
+              const accessCount=creds.filter(c=>canAccess(c,u.team)).length;
+              return (
+                <div key={u.id} style={S.card()}>
+                  <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
+                    <div style={{ width:44, height:44, borderRadius:"50%",
+                      background:"linear-gradient(135deg,#f59e0b,#d97706)",
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      fontWeight:800, fontSize:15, color:"#fff", flexShrink:0 }}>
+                      {u.avatar}
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                        <span style={{ fontWeight:700, color:"#0f172a", fontSize:15 }}>{u.name}</span>
+                        {u.id===session.userId && (
+                          <span style={{ background:"#dbeafe", color:"#1e40af", borderRadius:20,
+                            padding:"1px 6px", fontSize:10, fontWeight:700 }}>You</span>
+                        )}
+                      </div>
+                      <div style={{ color:"#64748b", fontSize:13, fontFamily:"monospace" }}>@{u.username}</div>
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+                    <TeamBadge team={u.team} small />
+                    {u.twoFactorEnabled && (
+                      <span style={{ background:"#dcfce7", color:"#166534", borderRadius:20,
+                        padding:"2px 8px", fontSize:11, fontWeight:600 }}>2FA ✓</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize:12, color:"#64748b", marginBottom:10 }}>
+                    <div>Access: {accessCount} credentials</div>
+                    <div>Last login: {u.lastLoginAt?timeAgo(u.lastLoginAt):"Never"}</div>
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap",
+                    paddingTop:10, borderTop:"1px solid #f1f5f9" }}>
+                    <button onClick={()=>setEditUser(u)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>Edit</button>
+                    <button onClick={()=>setResetUser(u)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>Reset PW</button>
+                    <button onClick={()=>handleToggle2FA(u)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>
+                      {u.twoFactorEnabled?"Disable 2FA":"Enable 2FA"}
+                    </button>
+                    <button onClick={()=>handleRemove(u)}
+                      disabled={u.id===session.userId||(u.team==="admin"&&adminCount<=1)}
+                      style={{ ...S.btn("danger"), padding:"4px 10px", fontSize:12,
+                        opacity:(u.id===session.userId||(u.team==="admin"&&adminCount<=1))?0.4:1,
+                        cursor:(u.id===session.userId||(u.team==="admin"&&adminCount<=1))?"not-allowed":"pointer" }}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {(showAdd||editUser) && (
+        <UserModal user={editUser} onSave={handleSave} onClose={()=>{ setShowAdd(false); setEditUser(null); }} />
+      )}
+      {resetUser && (
+        <ResetPasswordModal user={resetUser} onClose={()=>setResetUser(null)}
+          onSave={()=>{ reload(); toast("Password reset!","success"); }} />
+      )}
+    </div>
+  );
+}
+
+// ─── Audit Log Tab ────────────────────────────────────────────────────────────
+function AuditTab({ session, toast }) {
+  const [audit] = useState(()=>getLS(LS.AUDIT,[]));
+  const [actionFilter, setActionFilter] = useState("All");
+  const [userFilter, setUserFilter] = useState("All");
+  const [dateRange, setDateRange] = useState("All");
+  const [search, setSearch] = useState("");
+
+  const actionColors = {
+    add:"#16a34a", approve:"#16a34a", add_user:"#16a34a", bulk_import:"#16a34a",
+    login:"#2563eb", view:"#2563eb", copy:"#2563eb",
+    edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b",
+    delete:"#dc2626", deny:"#dc2626", login_failed:"#dc2626", remove_user:"#dc2626",
+  };
+
+  const dateMs = { Today:86400000, "7d":7*86400000, "30d":30*86400000, All:Infinity };
+  const now = Date.now();
+  const uniqueUsers = [...new Set(audit.map(e=>e.userName).filter(Boolean))];
+
+  const filtered = audit.filter(e=>{
+    if(actionFilter!=="All"&&!e.action.includes(actionFilter.toLowerCase())) return false;
+    if(userFilter!=="All"&&e.userName!==userFilter) return false;
+    if(dateRange!=="All"&&(now-new Date(e.timestamp))>dateMs[dateRange]) return false;
+    if(search&&!e.userName?.toLowerCase().includes(search.toLowerCase())&&
+       !e.credentialName?.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  }).slice(0,500);
+
+  const handleExport = () => {
+    const h=["Timestamp","User","Action","Credential","Target","Detail"];
+    const rows=filtered.map(e=>[new Date(e.timestamp).toLocaleString(),e.userName,e.action,
+      e.credentialName||"",e.targetUserId||"",e.detail||e.ipNote||""]);
+    const ws=XLSX.utils.aoa_to_sheet([h,...rows]);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Audit Log");
+    XLSX.writeFile(wb,"VaultAccess-Audit.xlsx");
+    toast("Exported!","success");
+  };
+
+  return (
+    <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+        marginBottom:16, flexWrap:"wrap", gap:10 }}>
+        <h2 style={{ fontWeight:700, color:"#0f172a", fontSize:18 }}>Audit Log</h2>
+        <button onClick={handleExport} style={S.btn("primary")}>📤 Export Audit Log</button>
+      </div>
+      <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap" }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          style={{ ...S.input(), maxWidth:220 }} placeholder="Search..." />
+        <select value={actionFilter} onChange={e=>setActionFilter(e.target.value)} style={{ ...S.input(), width:"auto" }}>
+          {["All","login","copy","edit","delete","add","request","import"].map(a=>(
+            <option key={a}>{a}</option>
+          ))}
+        </select>
+        <select value={userFilter} onChange={e=>setUserFilter(e.target.value)} style={{ ...S.input(), width:"auto" }}>
+          <option>All</option>
+          {uniqueUsers.map(u=><option key={u}>{u}</option>)}
+        </select>
+        <select value={dateRange} onChange={e=>setDateRange(e.target.value)} style={{ ...S.input(), width:"auto" }}>
+          {["Today","7d","30d","All"].map(d=><option key={d}>{d}</option>)}
+        </select>
+      </div>
+      <div style={{ background:"#fff", borderRadius:12, border:"1px solid #e5e9f0", overflow:"hidden" }}>
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+            <thead>
+              <tr style={{ background:"#f8fafc" }}>
+                {["Timestamp","User","Action","Credential/Target","Detail"].map(h=>(
+                  <th key={h} style={{ padding:"12px 14px", textAlign:"left",
+                    borderBottom:"1px solid #e5e9f0", fontWeight:600, color:"#64748b", fontSize:12 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length===0
+                ? <tr><td colSpan={5} style={{ textAlign:"center", padding:30, color:"#94a3b8" }}>No entries</td></tr>
+                : filtered.map(e=>(
+                  <tr key={e.id} style={{ borderBottom:"1px solid #f1f5f9" }}>
+                    <td style={{ padding:"10px 14px", color:"#64748b", whiteSpace:"nowrap", fontSize:12 }}>
+                      {new Date(e.timestamp).toLocaleString()}
+                    </td>
+                    <td style={{ padding:"10px 14px", fontWeight:600 }}>{e.userName}</td>
+                    <td style={{ padding:"10px 14px" }}>
+                      <span style={{ background:(actionColors[e.action]||"#64748b")+"20",
+                        color:actionColors[e.action]||"#64748b", borderRadius:20,
+                        padding:"3px 10px", fontSize:11, fontWeight:700 }}>{e.action}</span>
+                    </td>
+                    <td style={{ padding:"10px 14px", color:"#0f172a" }}>
+                      {e.credentialName||e.targetUserId||"—"}
+                    </td>
+                    <td style={{ padding:"10px 14px", color:"#64748b", fontSize:12 }}>
+                      {e.detail||e.ipNote}
+                    </td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Access Requests Tab ──────────────────────────────────────────────────────
+function AccessRequestsTab({ session, toast }) {
+  const [requests, setRequests] = useState(()=>getLS(LS.REQUESTS,[]));
+  const [subTab, setSubTab] = useState("pending");
+
+  const reload = () => setRequests(getLS(LS.REQUESTS,[]));
+
+  const handleApprove = req => {
+    const creds=getLS(LS.CREDS,[]);
+    setLS(LS.CREDS,creds.map(c=>{
+      if(c.id!==req.credentialId) return c;
+      if(c.teams==="all") return c;
+      const arr=Array.isArray(c.teams)?c.teams:[];
+      if(arr.includes(req.requesterTeam)) return c;
+      return { ...c, teams:[...arr,req.requesterTeam] };
+    }));
+    setLS(LS.REQUESTS,getLS(LS.REQUESTS,[]).map(r=>r.id===req.id
+      ?{...r,status:"approved",resolvedAt:new Date().toISOString(),resolvedBy:session.userName}:r));
+    addAudit({ userId:session.userId, userName:session.userName, action:"approve",
+      credentialId:req.credentialId, credentialName:req.credentialName,
+      detail:"Approved access for "+req.requesterName });
+    reload(); toast("Access approved!","success");
+  };
+
+  const handleDeny = req => {
+    setLS(LS.REQUESTS,getLS(LS.REQUESTS,[]).map(r=>r.id===req.id
+      ?{...r,status:"denied",resolvedAt:new Date().toISOString(),resolvedBy:session.userName}:r));
+    addAudit({ userId:session.userId, userName:session.userName, action:"deny",
+      credentialId:req.credentialId, credentialName:req.credentialName,
+      detail:"Denied access for "+req.requesterName });
+    reload(); toast("Request denied","info");
+  };
+
+  const pendingCount = requests.filter(r=>r.status==="pending").length;
+  const filtered = requests.filter(r=>r.status===subTab);
+
+  return (
+    <div>
+      <h2 style={{ fontWeight:700, color:"#0f172a", fontSize:18, marginBottom:16 }}>Access Requests</h2>
+      <div style={{ display:"flex", gap:4, marginBottom:20, borderBottom:"2px solid #e5e9f0" }}>
+        {["pending","approved","denied"].map(t=>(
+          <button key={t} onClick={()=>setSubTab(t)}
+            style={{ background:"none", border:"none", borderBottom:"2px solid "+(subTab===t?"#f59e0b":"transparent"),
+              color:subTab===t?"#f59e0b":"#64748b", fontWeight:subTab===t?700:400,
+              padding:"8px 16px", fontSize:14, cursor:"pointer",
+              display:"flex", alignItems:"center", gap:6 }}>
+            {t.charAt(0).toUpperCase()+t.slice(1)}
+            {t==="pending"&&pendingCount>0&&(
+              <span style={{ background:"#dc2626", color:"#fff", borderRadius:"50%",
+                minWidth:18, height:18, fontSize:10, fontWeight:800,
+                display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px" }}>
+                {pendingCount}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+      {filtered.length===0
+        ? <div style={{ textAlign:"center", padding:40, color:"#94a3b8" }}>No {subTab} requests.</div>
+        : <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            {filtered.map(r=>(
+              <div key={r.id} style={S.card()}>
+                <div style={{ display:"flex", justifyContent:"space-between",
+                  alignItems:"flex-start", flexWrap:"wrap", gap:10 }}>
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:15, color:"#0f172a", marginBottom:4,
+                      display:"flex", alignItems:"center", gap:8 }}>
+                      {r.requesterName} <TeamBadge team={r.requesterTeam} small />
+                    </div>
+                    <div style={{ color:"#64748b", fontSize:13 }}>
+                      Requesting access to: <strong>{r.credentialName}</strong>
+                    </div>
+                    {r.message && (
+                      <div style={{ marginTop:6, color:"#64748b", fontSize:13,
+                        background:"#f8fafc", borderRadius:6, padding:"6px 10px" }}>
+                        "{r.message}"
+                      </div>
+                    )}
+                    <div style={{ fontSize:12, color:"#94a3b8", marginTop:6 }}>
+                      {timeAgo(r.requestedAt)}
+                      {r.resolvedBy?" · Resolved by "+r.resolvedBy:""}
+                    </div>
+                  </div>
+                  {subTab==="pending" && (
+                    <div style={{ display:"flex", gap:8 }}>
+                      <button onClick={()=>handleApprove(r)} style={S.btn("primary")}>Approve</button>
+                      <button onClick={()=>handleDeny(r)} style={S.btn("danger")}>Deny</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+      }
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard({ user, onLogout }) {
+  const session = getSession();
+  const [tab, setTab] = useState("credentials");
+  const [showProfile, setShowProfile] = useState(false);
+  const [currentUser, setCurrentUser] = useState(user);
+  const [showInactivity, setShowInactivity] = useState(false);
+  const [countdown, setCountdown] = useState(60);
+  const [copyHistory, setCopyHistory] = useState([]);
+  const [toasts, toast] = useToast();
+  const lastActivity = useRef(Date.now());
+  const warningShown = useRef(false);
+
+  const resetActivity = useCallback(() => {
+    lastActivity.current = Date.now();
+    if (warningShown.current) { warningShown.current = false; setShowInactivity(false); }
+  }, []);
+
+  useEffect(() => {
+    const evts = ["click","keypress","mousemove"];
+    evts.forEach(e=>window.addEventListener(e,resetActivity));
+    return () => evts.forEach(e=>window.removeEventListener(e,resetActivity));
+  }, [resetActivity]);
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const idle = Date.now() - lastActivity.current;
+      if (idle >= 15*60000) { clearInterval(iv); onLogout(); return; }
+      if (idle >= 14*60000 && !warningShown.current) {
+        warningShown.current = true;
+        setShowInactivity(true);
+        setCountdown(Math.ceil((15*60000-idle)/1000));
+      } else if (idle >= 14*60000 && warningShown.current) {
+        setCountdown(Math.ceil((15*60000-idle)/1000));
+      }
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [onLogout]);
+
+  const isAdmin = session?.team==="admin";
+  const allRequests = getLS(LS.REQUESTS, []);
+  const pendingCount = allRequests.filter(r=>r.status==="pending").length;
+  const TABS = isAdmin ? ["credentials","users","audit","requests"] : ["credentials"];
+  const TAB_LABELS = { credentials:"Credentials", users:"Users", audit:"Audit Log", requests:"Access Requests" };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#f0f2f5" }}>
+      <style>{`
+        @keyframes slideIn { from { transform:translateX(20px);opacity:0 } to { transform:none;opacity:1 } }
+        * { box-sizing: border-box; }
+      `}</style>
+      <ToastContainer toasts={toasts} />
+
+      <header style={{ background:"#0a0f1e", padding:"0 24px", height:64, display:"flex",
+        alignItems:"center", justifyContent:"space-between",
+        position:"sticky", top:0, zIndex:100, boxShadow:"0 2px 20px rgba(0,0,0,0.3)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:22 }}>🔐</span>
+          <span style={{ color:"#fff", fontWeight:800, fontSize:18, letterSpacing:-0.5 }}>VaultAccess</span>
+        </div>
+        <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+          {TABS.map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{ background:tab===t?"rgba(245,158,11,0.15)":"transparent",
+              border:"1px solid "+(tab===t?"rgba(245,158,11,0.4)":"transparent"),
+              color:tab===t?"#f59e0b":"#94a3b8", borderRadius:8, padding:"6px 14px",
+              cursor:"pointer", fontWeight:600, fontSize:13,
+              display:"flex", alignItems:"center", gap:6 }}>
+              {TAB_LABELS[t]}
+              {t==="requests"&&pendingCount>0&&(
+                <span style={{ background:"#dc2626", color:"#fff", borderRadius:"50%",
+                  minWidth:18, height:18, fontSize:10, fontWeight:800,
+                  display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px" }}>
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <button onClick={()=>setShowProfile(p=>!p)}
+            style={{ background:"linear-gradient(135deg,#f59e0b,#d97706)", border:"none",
+              borderRadius:"50%", width:38, height:38, cursor:"pointer", color:"#fff",
+              fontWeight:800, fontSize:14, display:"flex", alignItems:"center", justifyContent:"center",
+              flexShrink:0 }}>
+            {currentUser.avatar}
+          </button>
+          <div style={{ color:"#fff" }}>
+            <div style={{ fontSize:13, fontWeight:600 }}>{currentUser.name}</div>
+            <div style={{ fontSize:11, color:"#64748b" }}>{session?.team}</div>
+          </div>
+          <button onClick={onLogout} style={{ ...S.btn("ghost"), borderColor:"rgba(255,255,255,0.15)",
+            color:"#94a3b8", padding:"6px 12px", fontSize:12 }}>Sign Out</button>
+        </div>
+      </header>
+
+      <main style={{ maxWidth:1400, margin:"0 auto", padding:24 }}>
+        {tab==="credentials" && <CredentialsTab session={session} toast={toast} />}
+        {tab==="users"&&isAdmin && <UsersTab session={session} toast={toast} />}
+        {tab==="audit"&&isAdmin && <AuditTab session={session} toast={toast} />}
+        {tab==="requests"&&isAdmin && <AccessRequestsTab session={session} toast={toast} />}
+      </main>
+
+      {showProfile && (
+        <>
+          <div onClick={()=>setShowProfile(false)} style={{ position:"fixed", inset:0,
+            background:"rgba(0,0,0,0.2)", zIndex:499 }} />
+          <ProfilePanel session={session} currentUser={currentUser}
+            onClose={()=>setShowProfile(false)}
+            onUserUpdate={u=>{
+              setCurrentUser(u);
+              const all=getLS(LS.USERS,[]);
+              setLS(LS.USERS,all.map(x=>x.id===u.id?u:x));
+            }}
+            toast={toast} copyHistory={copyHistory} />
+        </>
+      )}
+
+      {showInactivity && (
+        <InactivityModal countdown={countdown}
+          onStay={()=>{ resetActivity(); }}
+          onLogout={onLogout} />
+      )}
+    </div>
+  );
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+export default function VaultAccess() {
+  const [stage, setStage] = useState(() => {
+    const sess = getSession();
+    if (sess) {
+      const users = getLS(LS.USERS, []);
+      const user = users.find(u=>u.id===sess.userId);
+      if (user) return { name:"dashboard", user };
+    }
+    return { name:"login" };
+  });
+
+  useEffect(() => { seedData(); }, []);
+
+  const handleLogin = ({ stage:s, user }) => {
+    if (s==="totp") setStage({ name:"totp", user });
+    else setStage({ name:"dashboard", user });
+  };
+
+  const handleLogout = useCallback(() => {
+    const sess = getSession();
+    if (sess) addAudit({ userId:sess.userId, userName:sess.userName, action:"logout" });
+    clearSession();
+    setStage({ name:"login" });
+  }, []);
+
+  if (stage.name==="login") return <LoginScreen onLogin={handleLogin} />;
+  if (stage.name==="totp") return (
+    <TOTPScreen user={stage.user}
+      onVerify={u=>setStage({ name:"dashboard", user:u })}
+      onBack={()=>setStage({ name:"login" })} />
+  );
+  if (stage.name==="dashboard") return <Dashboard user={stage.user} onLogout={handleLogout} />;
+  return null;
 }
