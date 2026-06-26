@@ -9,12 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
+    "bcryptjs": "^2.4.3",
+    "otpauth": "^9.3.6",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "bcryptjs": "^2.4.3",
-    "xlsx": "^0.18.5",
-    "otpauth": "^9.3.6",
-    "qrcode": "^1.5.4"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
