@@ -63,6 +63,62 @@ const pwStrength = (pw) => {
   return s;
 };
 
+// ─── Time-restriction helpers ────────────────────────────────────────────────
+const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const ALL_DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const toMin = (s) => { const [h,m] = String(s||"0:0").split(":").map(Number); return (h||0)*60 + (m||0); };
+const fmtHm = (s) => { // "09:00" -> "9am", "17:30" -> "5:30pm"
+  const [h,m] = String(s||"0:0").split(":").map(Number);
+  const ap = h >= 12 ? "pm" : "am"; const h12 = (h % 12) || 12;
+  return m ? `${h12}:${String(m).padStart(2,"0")}${ap}` : `${h12}${ap}`;
+};
+const fmtNiceDate = (d) => d.toLocaleDateString(undefined, { month:"short", day:"numeric", year:"numeric" });
+const fmtNiceTime = (d) => d.toLocaleTimeString(undefined, { hour:"numeric", minute:"2-digit" });
+const summarizeDays = (days) => {
+  if (!days || !days.length) return "any day";
+  const wk = ["Mon","Tue","Wed","Thu","Fri"];
+  if (days.length === 5 && wk.every(d=>days.includes(d))) return "Mon–Fri";
+  if (days.length === 7) return "every day";
+  return ALL_DAYS.filter(d=>days.includes(d)).join(", ");
+};
+
+// Evaluate a credential's time restriction against the current moment.
+// Returns { state, label?, note? }. state ∈ none|active|outside|wrongday|expired|expiring|schedule
+function evalTimeRestriction(tr, now = new Date()) {
+  if (!tr || !tr.enabled) return { state: "none" };
+  if (tr.type === "schedule") return { state: "schedule", note: tr.note || "" };
+
+  if (tr.type === "expiry") {
+    if (!tr.expiryDate) return { state: "none" };
+    const expiry = new Date(`${tr.expiryDate}T${tr.expiresAt || "23:59"}`);
+    if (isNaN(expiry)) return { state: "none" };
+    const diff = expiry - now;
+    if (diff <= 0) return { state: "expired", label: `Expired · This access expired on ${fmtNiceDate(expiry)}` };
+    if (diff <= 48*3600*1000) return { state: "expiring", label: `Expiring soon · Access expires ${fmtNiceDate(expiry)} at ${fmtNiceTime(expiry)}` };
+    return { state: "active", label: "Active now" };
+  }
+
+  if (tr.type === "window") {
+    const days = tr.windowDays || [];
+    const utc = tr.timezone === "UTC";
+    const todayIdx = utc ? now.getUTCDay() : now.getDay();
+    const today = DOW[todayIdx];
+    const daysLabel = summarizeDays(days);
+    if (days.length && !days.includes(today)) {
+      return { state: "wrongday", label: `Not scheduled today · Available ${daysLabel}` };
+    }
+    const cur = utc ? now.getUTCHours()*60 + now.getUTCMinutes() : now.getHours()*60 + now.getMinutes();
+    const startM = toMin(tr.windowStart || "00:00"), endM = toMin(tr.windowEnd || "23:59");
+    const inWindow = startM <= endM ? (cur >= startM && cur <= endM) : (cur >= startM || cur <= endM);
+    if (!inWindow) {
+      return { state: "outside", label: `Outside access hours · Available ${daysLabel} ${fmtHm(tr.windowStart||"00:00")}–${fmtHm(tr.windowEnd||"23:59")}` };
+    }
+    return { state: "active", label: "Active now" };
+  }
+  return { state: "none" };
+}
+const isRestrictedState = (s) => ["outside","wrongday","expired","expiring"].includes(s);
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const S = {
   btn: (variant, extra) => {
@@ -307,7 +363,7 @@ function InactivityModal({ countdown, onStay, onLogout }) {
 }
 
 // ─── Credential Card ──────────────────────────────────────────────────────────
-function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, isFav,
+function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
   requests, onRequestAccess, toast, onPatch }) {
   const [showPw, setShowPw] = useState(false);
   const hasAccess = canAccess(cred, session.team);
@@ -319,16 +375,32 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, 
   const expiryDays = cred.passwordExpiryDays || 90;
   const daysLeft = expiryDays - age;
 
+  // Time restriction — evaluated every render against the current moment.
+  const tr = evalTimeRestriction(cred.timeRestriction);
+  const lockedByTime = tr.state === "expired";
+  const cardExtra =
+    tr.state === "expired" ? { borderLeft:"4px solid #ef4444", background:"rgba(239,68,68,0.04)" } :
+    (tr.state === "outside" || tr.state === "wrongday" || tr.state === "expiring") ? { borderLeft:"4px solid #f59e0b" } : {};
+
+  const hasVerify = !!(cred.verifyEmail || cred.verifyText || cred.verifyAuth);
+
   const handleCopyField = (value, field) => {
-    if (!hasAccess) return;
+    if (!hasAccess || lockedByTime) return;
     navigator.clipboard.writeText(value).then(() => {
       onCopy && onCopy(cred, field);
       toast && toast(field + " copied!", "success");
     });
   };
+  const handleCopyVerify = (value, field) => {
+    if (!hasAccess || lockedByTime) return;
+    navigator.clipboard.writeText(value).then(() => {
+      onCopyVerify && onCopyVerify(cred, field);
+      toast && toast(field + " copied!", "success");
+    });
+  };
 
   return (
-    <div style={{ ...S.card(), display:"flex", flexDirection:"column", gap:12 }}>
+    <div style={{ ...S.card(), ...cardExtra, display:"flex", flexDirection:"column", gap:12 }}>
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4, flexWrap:"wrap" }}>
@@ -357,13 +429,35 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, 
         </div>
       </div>
 
+      {/* Time-restriction status */}
+      {tr.state==="active" && (
+        <span style={{ alignSelf:"flex-start", background:"#dcfce7", color:"#166534", border:"1px solid #bbf7d0",
+          borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:700 }}>🟢 Active now</span>
+      )}
+      {tr.state==="schedule" && tr.note && (
+        <span style={{ alignSelf:"flex-start", background:"#eff6ff", color:"#1e40af", border:"1px solid #bfdbfe",
+          borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>ℹ️ {tr.note}</span>
+      )}
+      {(tr.state==="outside" || tr.state==="wrongday" || tr.state==="expiring") && (
+        <div style={{ background:"#fffbeb", border:"1px solid #fde68a", color:"#92400e",
+          borderRadius:8, padding:"8px 12px", fontSize:12, fontWeight:600 }}>
+          {tr.state==="expiring" ? "⚠️" : "⏰"} {tr.label}
+        </div>
+      )}
+      {tr.state==="expired" && (
+        <div style={{ background:"#fef2f2", border:"1px solid #fecaca", color:"#b91c1c",
+          borderRadius:8, padding:"8px 12px", fontSize:12, fontWeight:600 }}>
+          🔴 {tr.label}
+        </div>
+      )}
+
       <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px" }}>
         <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2, fontWeight:600 }}>USERNAME</div>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
           <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace", wordBreak:"break-all", flex:1 }}>{cred.username}</code>
           {hasAccess && (
-            <button onClick={()=>handleCopyField(cred.username,"Username")}
-              style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, flexShrink:0 }}>Copy</button>
+            <button onClick={()=>handleCopyField(cred.username,"Username")} disabled={lockedByTime}
+              style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, flexShrink:0, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>Copy</button>
           )}
         </div>
       </div>
@@ -380,23 +474,26 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, 
           )}
           {hasAccess && (
             <div style={{ display:"flex", gap:4, flexShrink:0 }}>
-              <button onClick={()=>setShowPw(p=>!p)} style={{ ...S.btn("ghost"), padding:"4px 8px", fontSize:12 }}>{showPw?"Hide":"Show"}</button>
-              <button onClick={()=>handleCopyField(cred.password,"Password")} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>Copy</button>
+              <button onClick={()=>setShowPw(p=>!p)} disabled={lockedByTime} style={{ ...S.btn("ghost"), padding:"4px 8px", fontSize:12, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>{showPw?"Hide":"Show"}</button>
+              <button onClick={()=>handleCopyField(cred.password,"Password")} disabled={lockedByTime} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>Copy</button>
             </div>
           )}
         </div>
       </div>
 
-      {cred.authMethod && cred.authMethod!=="None" && AUTH_META[cred.authMethod] && (
-        <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px" }}>
-          <div style={{ fontSize:11, color:"#94a3b8", marginBottom:4, fontWeight:600 }}>VERIFICATION (2FA)</div>
-          <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-            <span style={{ background:AUTH_META[cred.authMethod].bg, color:AUTH_META[cred.authMethod].color,
-              border:"1px solid "+AUTH_META[cred.authMethod].border, borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:700 }}>
-              {AUTH_META[cred.authMethod].icon} {cred.authMethod}
-            </span>
-            {cred.authLocation && <span style={{ fontSize:13, color:"#0f172a", fontWeight:500 }}>→ {cred.authLocation}</span>}
-          </div>
+      {hasVerify && (
+        <div style={{ background:"#f0f4f8", borderRadius:8, padding:"8px 12px", display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ fontSize:11, color:"#94a3b8", fontWeight:600 }}>VERIFICATION</div>
+          {[["📧","Email verification",cred.verifyEmail],["💬","Text verification",cred.verifyText],["🔐","Auth verification",cred.verifyAuth]]
+            .filter(([,,v])=>v).map(([icon,field,value])=>(
+            <div key={field} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+              <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace", wordBreak:"break-all", flex:1 }}>{icon} {value}</code>
+              {hasAccess && (
+                <button onClick={()=>handleCopyVerify(value, field)} disabled={lockedByTime}
+                  style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, flexShrink:0, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>Copy</button>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
@@ -431,6 +528,10 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, 
             style={{ ...S.input(), width:"auto", padding:"4px 8px", fontSize:12 }}>
             {[30,60,90,180].map(d=><option key={d} value={d}>{d}d expiry</option>)}
           </select>
+          {cred.timeRestriction && cred.timeRestriction.enabled && (
+            <button onClick={()=>onPatch(cred.id,{ timeRestriction:null })}
+              style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, color:"#b91c1c" }}>⏱️ Clear restriction</button>
+          )}
         </div>
       )}
 
@@ -448,22 +549,44 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onFavToggle, 
 // ─── Credential Modal ─────────────────────────────────────────────────────────
 function CredModal({ cred, onSave, onClose, session }) {
   const [form, setForm] = useState(cred
-    ? { ...cred }
+    ? { verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null, ...cred }
     : { portal:"", url:"", username:"", password:"", category:"Development",
         teams:[], passwordExpiryDays:90, needsRotation:false, rotationNote:"", client:"",
-        authMethod:"None", authLocation:"" });
+        authMethod:"None", authLocation:"",
+        verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null });
   const [teamsAll, setTeamsAll] = useState(!!(cred && cred.teams==="all"));
   const [selTeams, setSelTeams] = useState(cred && Array.isArray(cred.teams) ? cred.teams : []);
   const [busy, setBusy] = useState(false);
+  const [showVerify, setShowVerify] = useState(!!(cred && (cred.verifyEmail || cred.verifyText || cred.verifyAuth)));
+  const [showTime, setShowTime] = useState(!!(cred && cred.timeRestriction && cred.timeRestriction.enabled));
   const set = (k,v) => setForm(p=>({...p,[k]:v}));
   const toggleTeam = t => setSelTeams(p => p.includes(t)?p.filter(x=>x!==t):[...p,t]);
+
+  const tr = form.timeRestriction;
+  const trEnabled = !!(tr && tr.enabled);
+  const setTR = (patch) => setForm(p => ({ ...p, timeRestriction: { ...(p.timeRestriction||{}), ...patch } }));
+  const enableTR = (on) => setForm(p => {
+    if (!on) return { ...p, timeRestriction: p.timeRestriction ? { ...p.timeRestriction, enabled:false } : null };
+    const e = p.timeRestriction || {};
+    return { ...p, timeRestriction: {
+      enabled:true, type:e.type||"window",
+      windowDays:e.windowDays||["Mon","Tue","Wed","Thu","Fri"],
+      windowStart:e.windowStart||"09:00", windowEnd:e.windowEnd||"18:00", timezone:e.timezone||"local",
+      expiryDate:e.expiryDate||"", expiresAt:e.expiresAt||"", note:e.note||"",
+    }};
+  });
+  const toggleTRDay = (d) => setForm(p => {
+    const cur = (p.timeRestriction&&p.timeRestriction.windowDays)||[];
+    return { ...p, timeRestriction:{ ...(p.timeRestriction||{}), windowDays: cur.includes(d)?cur.filter(x=>x!==d):[...cur,d] } };
+  });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.portal.trim()||!form.username.trim()||!form.password.trim()) return;
     setBusy(true);
     try {
-      await onSave({ ...form, teams: teamsAll ? "all" : selTeams });
+      const timeRestriction = (form.timeRestriction && form.timeRestriction.enabled) ? form.timeRestriction : null;
+      await onSave({ ...form, teams: teamsAll ? "all" : selTeams, timeRestriction });
     } finally { setBusy(false); }
   };
 
@@ -490,19 +613,114 @@ function CredModal({ cred, onSave, onClose, session }) {
               {["Development","Infrastructure","Design","Marketing","Communication"].map(c=>(<option key={c} value={c}>{c}</option>))}
             </select>
           </div>
-          <div style={{ marginBottom:14 }}>
-            <label style={S.label}>Verification Method (2FA)</label>
-            <select value={form.authMethod||"None"} onChange={e=>set("authMethod",e.target.value)} style={S.input()}>
-              {AUTH_METHODS.map(m=>(<option key={m} value={m}>{m==="None"?"None":AUTH_META[m].label}</option>))}
-            </select>
+          {/* Verification Methods (collapsible) */}
+          <div style={{ marginBottom:14, border:"1px solid #e5e9f0", borderRadius:10, overflow:"hidden" }}>
+            <button type="button" onClick={()=>setShowVerify(v=>!v)}
+              style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+                background:"#f8fafc", border:"none", padding:"10px 12px", cursor:"pointer", fontSize:13, fontWeight:600, color:"#475569" }}>
+              <span>＋ Add verification info</span>
+              <span style={{ transform:showVerify?"rotate(180deg)":"none", transition:"transform .15s" }}>⌄</span>
+            </button>
+            {showVerify && (
+              <div style={{ padding:12, display:"flex", flexDirection:"column", gap:12 }}>
+                {[["📧 Email verification","verifyEmail","e.g. admin@company.com inbox"],
+                  ["💬 Text verification","verifyText","e.g. +1 (555) 000-0000"],
+                  ["🔐 Auth verification","verifyAuth","e.g. Google Authenticator – Work profile"]].map(([lbl,key,ph])=>(
+                  <div key={key}>
+                    <label style={S.label}>{lbl}</label>
+                    <input value={form[key]||""} onChange={e=>set(key,e.target.value)} style={S.input()} placeholder={ph} />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          {form.authMethod && form.authMethod!=="None" && (
-            <div style={{ marginBottom:14 }}>
-              <label style={S.label}>Where to find the code</label>
-              <input value={form.authLocation||""} onChange={e=>set("authLocation",e.target.value)} style={S.input()}
-                placeholder={form.authMethod==="Text"?"e.g. +1 555-0142 (Sales phone)":form.authMethod==="Auth"?"e.g. Engineering Authy (shared)":"e.g. admin@company.com inbox"} />
-            </div>
-          )}
+
+          {/* Time Restriction (collapsible) */}
+          <div style={{ marginBottom:14, border:"1px solid #e5e9f0", borderRadius:10, overflow:"hidden" }}>
+            <button type="button" onClick={()=>setShowTime(v=>!v)}
+              style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+                background:"#f8fafc", border:"none", padding:"10px 12px", cursor:"pointer", fontSize:13, fontWeight:600, color:"#475569" }}>
+              <span>⏰ Time Restriction</span>
+              <span style={{ transform:showTime?"rotate(180deg)":"none", transition:"transform .15s" }}>⌄</span>
+            </button>
+            {showTime && (
+              <div style={{ padding:12 }}>
+                <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:13, marginBottom:trEnabled?12:0 }}>
+                  <input type="checkbox" checked={trEnabled} onChange={e=>enableTR(e.target.checked)} />
+                  Restrict usage to specific times
+                </label>
+                {trEnabled && (<>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
+                    {[["window","Time Window"],["expiry","Expiry Date"],["schedule","Schedule Note"]].map(([val,lbl])=>(
+                      <button key={val} type="button" onClick={()=>setTR({ type:val })}
+                        style={{ ...S.btn(tr.type===val?"primary":"ghost"), padding:"6px 12px", fontSize:12 }}>
+                        {tr.type===val?"● ":"○ "}{lbl}
+                      </button>
+                    ))}
+                  </div>
+
+                  {tr.type==="window" && (
+                    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                      <div>
+                        <label style={S.label}>Days</label>
+                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                          {ALL_DAYS.map(d=>{
+                            const on=(tr.windowDays||[]).includes(d);
+                            return <button key={d} type="button" onClick={()=>toggleTRDay(d)}
+                              style={{ padding:"4px 10px", borderRadius:8, fontSize:12, cursor:"pointer", fontWeight:600,
+                                border:"1px solid "+(on?"#3b82f6":"#e5e9f0"), background:on?"#dbeafe":"#f8fafc", color:on?"#1e40af":"#64748b" }}>{d}</button>;
+                          })}
+                        </div>
+                      </div>
+                      <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                        <div style={{ flex:1, minWidth:120 }}>
+                          <label style={S.label}>Start</label>
+                          <input type="time" value={tr.windowStart||"09:00"} onChange={e=>setTR({ windowStart:e.target.value })} style={S.input()} />
+                        </div>
+                        <div style={{ flex:1, minWidth:120 }}>
+                          <label style={S.label}>End</label>
+                          <input type="time" value={tr.windowEnd||"18:00"} onChange={e=>setTR({ windowEnd:e.target.value })} style={S.input()} />
+                        </div>
+                      </div>
+                      <div>
+                        <label style={S.label}>Timezone</label>
+                        <div style={{ display:"flex", gap:6 }}>
+                          {["local","UTC"].map(tz=>(
+                            <button key={tz} type="button" onClick={()=>setTR({ timezone:tz })}
+                              style={{ ...S.btn(tr.timezone===tz?"primary":"ghost"), padding:"6px 14px", fontSize:12 }}>{tz==="local"?"Local":"UTC"}</button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {tr.type==="expiry" && (
+                    <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                      <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                        <div style={{ flex:1, minWidth:140 }}>
+                          <label style={S.label}>Expiry date</label>
+                          <input type="date" value={tr.expiryDate||""} onChange={e=>setTR({ expiryDate:e.target.value })} style={S.input()} />
+                        </div>
+                        <div style={{ flex:1, minWidth:120 }}>
+                          <label style={S.label}>Time (optional)</label>
+                          <input type="time" value={tr.expiresAt||""} onChange={e=>setTR({ expiresAt:e.target.value })} style={S.input()} />
+                        </div>
+                      </div>
+                      <p style={{ fontSize:12, color:"#94a3b8", margin:0 }}>Card will appear locked after this date/time.</p>
+                    </div>
+                  )}
+
+                  {tr.type==="schedule" && (
+                    <div>
+                      <label style={S.label}>Describe when this credential should be used</label>
+                      <textarea value={tr.note||""} onChange={e=>setTR({ note:e.target.value })}
+                        style={{ ...S.input(), resize:"vertical", minHeight:70 }} placeholder="Only during Q4 campaign — Oct to Dec" />
+                    </div>
+                  )}
+                </>)}
+              </div>
+            )}
+          </div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Team Access</label>
             <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:13 }}>
@@ -949,6 +1167,7 @@ function CredentialsTab({ session, toast }) {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("All");
   const [clientFilter, setClientFilter] = useState("All");
+  const [restrictedOnly, setRestrictedOnly] = useState(false);
   const [sort, setSort] = useState("A-Z");
   const [editCred, setEditCred] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -983,6 +1202,10 @@ function CredentialsTab({ session, toast }) {
     return c.needsRotation||((c.passwordExpiryDays||90)-age)<=7;
   });
 
+  const restrictBase = isAdmin?creds:accessible;
+  const restrictedCount = restrictBase.filter(c=>isRestrictedState(evalTimeRestriction(c.timeRestriction).state)).length;
+  const expiredCount = restrictBase.filter(c=>evalTimeRestriction(c.timeRestriction).state==="expired").length;
+
   const baseList = isAdmin?creds:accessible;
   const filtered = baseList.filter(c=>{
     const q=search.toLowerCase();
@@ -990,7 +1213,8 @@ function CredentialsTab({ session, toast }) {
       (c.client||"").toLowerCase().includes(q)||(c.authLocation||"").toLowerCase().includes(q)||(c.url||"").toLowerCase().includes(q);
     const mc=catFilter==="All"||c.category===catFilter;
     const mcl=clientFilter==="All"||(c.client||"")===clientFilter;
-    return ms&&mc&&mcl;
+    const mr=!restrictedOnly||(c.timeRestriction&&c.timeRestriction.enabled);
+    return ms&&mc&&mcl&&mr;
   }).sort((a,b)=>{
     if(sort==="A-Z") return a.portal.localeCompare(b.portal);
     if(sort==="Newest") return new Date(b.addedAt)-new Date(a.addedAt);
@@ -1004,6 +1228,12 @@ function CredentialsTab({ session, toast }) {
 
   const handleCopy = (cred, field) => {
     logAudit({ userId:session.userId, userName:session.userName, action:"copy",
+      credentialId:cred.id, credentialName:cred.portal, detail:"Copied "+field });
+    setRecentViewed(prev=>[cred,...prev.filter(c=>c.id!==cred.id)].slice(0,5));
+  };
+
+  const handleCopyVerify = (cred, field) => {
+    logAudit({ userId:session.userId, userName:session.userName, action:"copy_verify",
       credentialId:cred.id, credentialName:cred.portal, detail:"Copied "+field });
     setRecentViewed(prev=>[cred,...prev.filter(c=>c.id!==cred.id)].slice(0,5));
   };
@@ -1044,7 +1274,7 @@ function CredentialsTab({ session, toast }) {
     const newC=valid.map(r=>({
       portal:r.Portal, url:r.URL||"", client:r.Client||"", username:r.Username||"", password:r.Password||"",
       category:r.Category||"Development",
-      authMethod:AUTH_METHODS.includes(r["Auth Method"])?r["Auth Method"]:"None", authLocation:r["Auth Location"]||"",
+      verifyEmail:r["Verify Email"]||"", verifyText:r["Verify Text"]||"", verifyAuth:r["Verify Auth"]||"",
       teams:r.Teams==="all"?"all":String(r.Teams||"").split(",").map(t=>t.trim()).filter(Boolean),
       passwordExpiryDays:+(r["Expiry Days"])||90, needsRotation:false, rotationNote:"",
     }));
@@ -1061,9 +1291,21 @@ function CredentialsTab({ session, toast }) {
 
   const handleExport = () => {
     const all=creds;
-    const h=["Portal","URL","Client","Username","Password","Auth Method","Auth Location","Category","Teams","Expiry Days","Days Since Updated","Needs Rotation","Added By","Added At"];
-    const rows=all.map(c=>[c.portal,c.url,c.client||"",c.username,c.password,c.authMethod||"None",c.authLocation||"",c.category,
-      c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",c.addedBy,c.addedAt]);
+    const trType = (c)=>(c.timeRestriction&&c.timeRestriction.enabled)?c.timeRestriction.type:"";
+    const trDetails = (c)=>{
+      const t=c.timeRestriction; if(!t||!t.enabled) return "";
+      if(t.type==="window") return `${summarizeDays(t.windowDays)} ${t.windowStart||""}-${t.windowEnd||""} ${t.timezone||"local"}`;
+      if(t.type==="expiry") return `Expires ${t.expiryDate||""}${t.expiresAt?(" "+t.expiresAt):""}`;
+      if(t.type==="schedule") return t.note||"";
+      return "";
+    };
+    const trActive = (c)=>{ const st=evalTimeRestriction(c.timeRestriction).state;
+      if(st==="none") return ""; return (st==="active"||st==="schedule"||st==="expiring")?"Yes":"No"; };
+    const h=["Portal","URL","Client","Username","Password","Verify Email","Verify Text","Verify Auth","Category","Teams","Expiry Days","Days Since Updated","Needs Rotation","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
+    const rows=all.map(c=>[c.portal,c.url,c.client||"",c.username,c.password,
+      c.verifyEmail||"",c.verifyText||"",c.verifyAuth||"",c.category,
+      c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",
+      trType(c),trDetails(c),trActive(c),c.addedBy,c.addedAt]);
     const ws1=XLSX.utils.aoa_to_sheet([h,...rows]); ws1["!cols"]=h.map(()=>({wch:20}));
     const teams=["engineering","marketing","design","ops"];
     const mh=["Credential",...teams];
@@ -1075,11 +1317,11 @@ function CredentialsTab({ session, toast }) {
   };
 
   const handleTemplate = () => {
-    const h=["Portal","URL","Client","Username","Password","Auth Method","Auth Location","Category","Teams","Expiry Days"];
+    const h=["Portal","URL","Client","Username","Password","Verify Email","Verify Text","Verify Auth","Category","Teams","Expiry Days"];
     const ex=[
-      ["GitHub","github.com","Acme Corp","user@example.com","password123","Auth","Engineering Authy (shared)","Development","engineering",90],
-      ["Figma","figma.com","Bright Agency","design@co.com","figpass","Email","design@co.com inbox","Design","design,marketing",60],
-      ["Notion","notion.so","Internal","team@co.com","notionpw","None","","Communication","all",90],
+      ["GitHub","github.com","Acme Corp","user@example.com","password123","","","Engineering Authy (shared)","Development","engineering",90],
+      ["Figma","figma.com","Bright Agency","design@co.com","figpass","design@co.com inbox","","","Design","design,marketing",60],
+      ["Notion","notion.so","Internal","team@co.com","notionpw","","+1 (555) 000-0000","","Communication","all",90],
     ];
     const ws=XLSX.utils.aoa_to_sheet([h,...ex]); ws["!cols"]=h.map(()=>({wch:22}));
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Template");
@@ -1090,6 +1332,7 @@ function CredentialsTab({ session, toast }) {
     accessible: accessible.length,
     categories: new Set(accessible.map(c=>c.category)).size,
     clientsCount: new Set(creds.map(c=>c.client||"").filter(Boolean)).size,
+    restricted: restrictedCount,
     team: accessible.filter(c=>c.teams!=="all"&&Array.isArray(c.teams)&&c.teams.includes(session.team)).length,
     total: creds.length,
   };
@@ -1104,10 +1347,14 @@ function CredentialsTab({ session, toast }) {
 
   return (
     <div>
-      {rotationWarning.length>0 && (
+      {(rotationWarning.length>0 || expiredCount>0) && (
         <div style={{ background:"#fffbeb", border:"1px solid #fde68a", borderRadius:10, padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
           <span style={{ fontSize:18 }}>⚠️</span>
-          <span style={{ color:"#92400e", fontWeight:600, fontSize:14 }}>{rotationWarning.length} credential(s) need rotation or expiring within 7 days.</span>
+          <span style={{ color:"#92400e", fontWeight:600, fontSize:14 }}>
+            {rotationWarning.length>0 && `${rotationWarning.length} credential(s) need rotation or expiring within 7 days.`}
+            {rotationWarning.length>0 && expiredCount>0 && " "}
+            {expiredCount>0 && `${expiredCount} time-restricted credential(s) have expired.`}
+          </span>
         </div>
       )}
 
@@ -1115,6 +1362,7 @@ function CredentialsTab({ session, toast }) {
         <StatCard val={stats.accessible} label="Accessible" color="#2563eb" />
         <StatCard val={stats.categories} label="Categories" color="#16a34a" />
         <StatCard val={stats.clientsCount} label="Clients" color="#3b52a0" />
+        <StatCard val={stats.restricted} label="Restricted" color="#ef4444" />
         <StatCard val={stats.team} label={"Team ("+session.team+")"} color="#9333ea" />
         {isAdmin && <StatCard val={stats.total} label="Total" color="#f59e0b" />}
       </div>
@@ -1138,7 +1386,7 @@ function CredentialsTab({ session, toast }) {
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:16 }}>
             {pinned.map(c=>(
               <CredentialCard key={c.id} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
-                onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={true} requests={requests}
+                onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={true} requests={requests}
                 onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
             ))}
           </div>
@@ -1150,6 +1398,12 @@ function CredentialsTab({ session, toast }) {
         <select value={sort} onChange={e=>setSort(e.target.value)} style={{ ...S.input(), width:"auto" }}>
           {["A-Z","Newest","Oldest","Expiring Soon"].map(s=><option key={s}>{s}</option>)}
         </select>
+        <button onClick={()=>setRestrictedOnly(v=>!v)}
+          style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600,
+            border:"1px solid "+(restrictedOnly?"#ef4444":"#e5e9f0"),
+            background:restrictedOnly?"#fef2f2":"#fff", color:restrictedOnly?"#b91c1c":"#64748b" }}>
+          ⏰ Time-Restricted
+        </button>
       </div>
 
       <div style={{ display:"flex", gap:8, marginBottom:10, flexWrap:"wrap", alignItems:"center" }}>

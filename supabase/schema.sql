@@ -32,6 +32,10 @@ create table if not exists public.credentials (
   client               text default '',
   auth_method          text not null default 'None' check (auth_method in ('None','Text','Auth','Email')),
   auth_location        text default '',
+  verify_email         text default '',
+  verify_text          text default '',
+  verify_auth          text default '',
+  time_restriction     jsonb default null,               -- null when unrestricted
   all_teams            boolean not null default false,   -- true == every team
   teams                text[] not null default '{}',     -- used when all_teams = false
   password_expiry_days integer not null default 90,

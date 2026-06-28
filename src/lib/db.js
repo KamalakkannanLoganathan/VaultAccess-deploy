@@ -9,6 +9,8 @@ const credFromRow = (r) => ({
   id: r.id, portal: r.portal, url: r.url || "", username: r.username, password: r.password,
   category: r.category, client: r.client || "",
   authMethod: r.auth_method || "None", authLocation: r.auth_location || "",
+  verifyEmail: r.verify_email || "", verifyText: r.verify_text || "", verifyAuth: r.verify_auth || "",
+  timeRestriction: r.time_restriction || null,
   teams: r.all_teams ? "all" : (r.teams || []),
   passwordExpiryDays: r.password_expiry_days || 90,
   needsRotation: !!r.needs_rotation, rotationNote: r.rotation_note || "",
@@ -21,6 +23,8 @@ const credToRow = (c) => {
     portal: c.portal, url: c.url || "", username: c.username, password: c.password,
     category: c.category, client: c.client || "",
     auth_method: c.authMethod || "None", auth_location: c.authLocation || "",
+    verify_email: c.verifyEmail || "", verify_text: c.verifyText || "", verify_auth: c.verifyAuth || "",
+    time_restriction: c.timeRestriction || null,
     all_teams: all, teams: all ? [] : (Array.isArray(c.teams) ? c.teams : []),
     password_expiry_days: c.passwordExpiryDays || 90,
     needs_rotation: !!c.needsRotation, rotation_note: c.rotationNote || "",
@@ -95,6 +99,7 @@ export async function patchCredential(id, patch) {
   const row = { updated_at: new Date().toISOString() };
   if ("needsRotation" in patch) row.needs_rotation = patch.needsRotation;
   if ("passwordExpiryDays" in patch) row.password_expiry_days = patch.passwordExpiryDays;
+  if ("timeRestriction" in patch) row.time_restriction = patch.timeRestriction;
   if ("teams" in patch) {
     const all = patch.teams === "all";
     row.all_teams = all;
