@@ -14,21 +14,25 @@ import {
 const SS_KEY = "vault_session";
 const TEAMS = ["admin","engineering","marketing","design","ops"];
 const TEAM_STYLES = {
-  admin:       { bg:"#fef3c7", color:"#92400e", border:"#fde68a" },
-  engineering: { bg:"#dbeafe", color:"#1e40af", border:"#bfdbfe" },
-  marketing:   { bg:"#fce7f3", color:"#9d174d", border:"#fbcfe8" },
-  design:      { bg:"#ede9fe", color:"#6d28d9", border:"#ddd6fe" },
-  ops:         { bg:"#dcfce7", color:"#166534", border:"#bbf7d0" },
+  admin:       { bg:"rgba(251,191,36,0.12)", color:"#fbbf24", border:"rgba(251,191,36,0.35)" },
+  engineering: { bg:"rgba(96,165,250,0.12)", color:"#60a5fa", border:"rgba(96,165,250,0.35)" },
+  marketing:   { bg:"rgba(244,114,182,0.12)", color:"#f472b6", border:"rgba(244,114,182,0.35)" },
+  design:      { bg:"rgba(167,139,250,0.12)", color:"#a78bfa", border:"rgba(167,139,250,0.35)" },
+  ops:         { bg:"rgba(52,211,153,0.12)", color:"#34d399", border:"rgba(52,211,153,0.35)" },
 };
 const CAT_ICONS = {
   Development:"💻", Infrastructure:"🔧", Design:"🎨", Marketing:"📣",
   Communication:"💬", Default:"🔑",
 };
+const CAT_TINT = {
+  Development:"rgba(96,165,250,0.15)", Infrastructure:"rgba(52,211,153,0.15)", Design:"rgba(167,139,250,0.15)",
+  Marketing:"rgba(244,114,182,0.15)", Communication:"rgba(245,184,0,0.15)", Default:"rgba(255,255,255,0.08)",
+};
 const AUTH_METHODS = ["None","Text","Auth","Email"];
 const AUTH_META = {
-  Text:  { icon:"💬", label:"Text (SMS)",   bg:"#dbeafe", color:"#1e40af", border:"#bfdbfe" },
-  Auth:  { icon:"🔑", label:"Auth (App)",   bg:"#ede9fe", color:"#6d28d9", border:"#ddd6fe" },
-  Email: { icon:"✉️", label:"Email (Code)", bg:"#dcfce7", color:"#166534", border:"#bbf7d0" },
+  Text:  { icon:"💬", label:"Text (SMS)" },
+  Auth:  { icon:"🔑", label:"Auth (App)" },
+  Email: { icon:"✉️", label:"Email (Code)" },
 };
 
 // ─── Session cache (sessionStorage) ─────────────────────────────────────────
@@ -67,7 +71,7 @@ const pwStrength = (pw) => {
 const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const ALL_DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const toMin = (s) => { const [h,m] = String(s||"0:0").split(":").map(Number); return (h||0)*60 + (m||0); };
-const fmtHm = (s) => { // "09:00" -> "9am", "17:30" -> "5:30pm"
+const fmtHm = (s) => {
   const [h,m] = String(s||"0:0").split(":").map(Number);
   const ap = h >= 12 ? "pm" : "am"; const h12 = (h % 12) || 12;
   return m ? `${h12}:${String(m).padStart(2,"0")}${ap}` : `${h12}${ap}`;
@@ -81,13 +85,9 @@ const summarizeDays = (days) => {
   if (days.length === 7) return "every day";
   return ALL_DAYS.filter(d=>days.includes(d)).join(", ");
 };
-
-// Evaluate a credential's time restriction against the current moment.
-// Returns { state, label?, note? }. state ∈ none|active|outside|wrongday|expired|expiring|schedule
 function evalTimeRestriction(tr, now = new Date()) {
   if (!tr || !tr.enabled) return { state: "none" };
   if (tr.type === "schedule") return { state: "schedule", note: tr.note || "" };
-
   if (tr.type === "expiry") {
     if (!tr.expiryDate) return { state: "none" };
     const expiry = new Date(`${tr.expiryDate}T${tr.expiresAt || "23:59"}`);
@@ -97,7 +97,6 @@ function evalTimeRestriction(tr, now = new Date()) {
     if (diff <= 48*3600*1000) return { state: "expiring", label: `Expiring soon · Access expires ${fmtNiceDate(expiry)} at ${fmtNiceTime(expiry)}` };
     return { state: "active", label: "Active now" };
   }
-
   if (tr.type === "window") {
     const days = tr.windowDays || [];
     const utc = tr.timezone === "UTC";
@@ -119,40 +118,132 @@ function evalTimeRestriction(tr, now = new Date()) {
 }
 const isRestrictedState = (s) => ["outside","wrongday","expired","expiring"].includes(s);
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Count-up hook ───────────────────────────────────────────────────────────
+function useCountUp(target, duration = 800) {
+  const [val, setVal] = useState(0);
+  useEffect(() => {
+    const t0 = performance.now(); let raf;
+    const tick = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setVal(Math.round((Number(target)||0) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick); else setVal(Number(target)||0);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return val;
+}
+
+// ─── Design tokens / shared style fragments ──────────────────────────────────
+const glass = {
+  background:"linear-gradient(135deg, rgba(13,24,41,0.9) 0%, rgba(19,32,53,0.85) 100%)",
+  backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
+  border:"1px solid rgba(255,255,255,0.08)", borderRadius:16,
+  boxShadow:"0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)",
+};
+const fieldBox = { background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, padding:"8px 12px" };
+const microLabel = { fontSize:10, fontWeight:600, letterSpacing:1.5, textTransform:"uppercase", color:"var(--text-muted)" };
+const monoVal = (muted) => ({ fontFamily:"var(--font-mono)", fontSize:13, color: muted?"var(--text-muted)":"var(--text-primary)", wordBreak:"break-all", flex:1 });
+const iconBtn = (active, disabled) => ({
+  width:32, height:32, display:"inline-flex", alignItems:"center", justifyContent:"center", flexShrink:0,
+  background: active?"var(--success-bg)":"rgba(255,255,255,0.05)",
+  border:"1px solid "+(active?"rgba(16,185,129,0.4)":"var(--border-subtle)"),
+  borderRadius:8, cursor: disabled?"not-allowed":"pointer", color: active?"var(--success)":"var(--text-secondary)",
+  fontSize:13, transition:"all 0.15s ease", opacity: disabled?0.4:1,
+});
+
 const S = {
   btn: (variant, extra) => {
-    const base = { padding:"8px 16px", borderRadius:8, border:"none", cursor:"pointer",
-      fontWeight:600, fontSize:14, transition:"all 0.15s", display:"inline-flex",
-      alignItems:"center", gap:4 };
+    const base = { padding:"10px 18px", borderRadius:10, border:"none", cursor:"pointer",
+      fontWeight:600, fontSize:14, transition:"all 0.15s ease", display:"inline-flex",
+      alignItems:"center", gap:6, fontFamily:"var(--font-ui)" };
     const variants = {
-      primary: { background:"linear-gradient(135deg,#f59e0b,#d97706)", color:"#fff" },
-      danger:  { background:"#fee2e2", color:"#dc2626", border:"1px solid #fca5a5" },
-      ghost:   { background:"transparent", color:"#64748b", border:"1px solid #e5e9f0" },
-      secondary:{ background:"#f1f5f9", color:"#334155", border:"1px solid #e5e9f0" },
+      primary:   { background:"linear-gradient(135deg,#f5b800 0%,#d4960a 100%)", color:"#03070f", fontWeight:700, boxShadow:"0 4px 16px rgba(245,184,0,0.3)" },
+      danger:    { background:"rgba(239,68,68,0.12)", color:"#f87171", border:"1px solid rgba(239,68,68,0.3)" },
+      ghost:     { background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid rgba(255,255,255,0.12)" },
+      secondary: { background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid rgba(255,255,255,0.12)" },
     };
     return { ...base, ...(variants[variant || "secondary"] || variants.secondary), ...(extra||{}) };
   },
-  card: (extra) => ({ background:"#fff", borderRadius:14, border:"1px solid #e5e9f0",
-    padding:20, transition:"box-shadow 0.2s", ...(extra||{}) }),
-  input: (extra) => ({ width:"100%", padding:"10px 14px", borderRadius:8,
-    border:"1px solid #e5e9f0", fontSize:14, color:"#0f172a", background:"#f8fafc",
-    outline:"none", fontFamily:"inherit", boxSizing:"border-box", ...(extra||{}) }),
-  label: { fontSize:13, fontWeight:600, color:"#475569", marginBottom:4, display:"block" },
-  overlay: { position:"fixed", inset:0, background:"rgba(10,15,30,0.6)", zIndex:1000,
-    display:"flex", alignItems:"center", justifyContent:"center", padding:16 },
+  card: (extra) => ({ ...glass, padding:20, transition:"all 0.2s cubic-bezier(0.4,0,0.2,1)", ...(extra||{}) }),
+  input: (extra) => ({ width:"100%", padding:"10px 14px", borderRadius:10,
+    border:"1px solid var(--border-default)", fontSize:14, color:"var(--text-primary)", background:"rgba(0,0,0,0.3)",
+    outline:"none", fontFamily:"var(--font-ui)", boxSizing:"border-box", ...(extra||{}) }),
+  label: { fontSize:11, fontWeight:600, color:"var(--text-muted)", marginBottom:6, display:"block", textTransform:"uppercase", letterSpacing:1 },
+  overlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)",
+    zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 },
+  modal: (extra) => ({ background:"var(--bg-elevated)", border:"1px solid var(--border-default)", borderTop:"2px solid var(--gold-bright)",
+    borderRadius:20, boxShadow:"0 24px 80px rgba(0,0,0,0.6)", ...(extra||{}) }),
 };
+
+// ─── Global styles (CSS variables, keyframes, polish) ────────────────────────
+function GlobalStyles() {
+  return (
+    <style>{`
+      :root {
+        --bg-void:#03070f; --bg-base:#080f1e; --bg-surface:#0d1829; --bg-elevated:#132035; --bg-highlight:#1a2d4a;
+        --border-subtle:rgba(255,255,255,0.06); --border-default:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.18);
+        --gold-bright:#f5b800; --gold-mid:#d4960a; --gold-dim:rgba(245,184,0,0.15); --gold-glow:rgba(245,184,0,0.25);
+        --text-primary:#f0f4ff; --text-secondary:#8899b4; --text-muted:#4a5568; --text-gold:#f5b800;
+        --success:#10b981; --success-bg:rgba(16,185,129,0.12); --warning:#f59e0b; --warning-bg:rgba(245,158,11,0.12);
+        --danger:#ef4444; --danger-bg:rgba(239,68,68,0.12); --info:#60a5fa; --info-bg:rgba(96,165,250,0.12);
+        --font-ui:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; --font-mono:'JetBrains Mono',monospace;
+      }
+      * { box-sizing:border-box; }
+      body { font-family:var(--font-ui); color:var(--text-primary); background:var(--bg-base); }
+      ::-webkit-scrollbar { width:6px; height:6px; }
+      ::-webkit-scrollbar-track { background:transparent; }
+      ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12); border-radius:3px; }
+      ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.22); }
+      ::selection { background:rgba(245,184,0,0.25); color:#fff; }
+      button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline:2px solid rgba(245,184,0,0.5); outline-offset:2px;
+      }
+      input::placeholder, textarea::placeholder { color:var(--text-muted); }
+      input, select, textarea { transition:border-color .15s ease, box-shadow .15s ease; }
+      input:focus, select:focus, textarea:focus { border-color:var(--gold-bright) !important; box-shadow:0 0 0 3px var(--gold-dim); }
+      select option { background:#132035; color:#f0f4ff; }
+      .erc-card { transition:all 0.2s cubic-bezier(0.4,0,0.2,1); }
+      .erc-card:hover { border-color:rgba(245,184,0,0.25); transform:translateY(-2px);
+        box-shadow:0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(245,184,0,0.15), inset 0 1px 0 rgba(255,255,255,0.08); }
+      .erc-prim:hover { filter:brightness(1.1); box-shadow:0 6px 24px rgba(245,184,0,0.45); }
+      .erc-prim:active { transform:scale(0.98); }
+      .erc-ghost:hover { background:rgba(255,255,255,0.10) !important; color:var(--text-primary) !important; }
+      .erc-pill:hover { border-color:var(--border-strong); color:var(--text-primary); }
+      @keyframes ercFloat { 0%{transform:translate(0,0)} 50%{transform:translate(20px,-16px)} 100%{transform:translate(0,0)} }
+      @keyframes ercShake { 0%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} 100%{transform:translateX(0)} }
+      @keyframes ercFade { from{opacity:0} to{opacity:1} }
+      @keyframes ercCardIn { from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:translateY(0)} }
+      @keyframes ercToastIn { from{opacity:0; transform:translateX(120%)} to{opacity:1; transform:translateX(0)} }
+      @keyframes ercDrawerIn { from{transform:translateX(100%)} to{transform:translateX(0)} }
+      @keyframes ercPulse { 0%{transform:scale(1)} 50%{transform:scale(1.15)} 100%{transform:scale(1)} }
+      @keyframes ercSlideDown { from{opacity:0; transform:translateY(20px)} to{opacity:1; transform:translateY(0)} }
+      .erc-page { animation:ercFade 0.15s ease; }
+    `}</style>
+  );
+}
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 function ToastContainer({ toasts }) {
+  const meta = {
+    success:{ c:"var(--success)", icon:"✓" }, error:{ c:"var(--danger)", icon:"✕" }, info:{ c:"var(--gold-bright)", icon:"ℹ" },
+  };
   return (
-    <div style={{ position:"fixed", top:20, right:20, zIndex:9999, display:"flex", flexDirection:"column", gap:8 }}>
-      {toasts.map(t => (
-        <div key={t.id} style={{ padding:"12px 20px", borderRadius:10, fontWeight:500, fontSize:14,
-          color:"#fff", minWidth:260, boxShadow:"0 4px 16px rgba(0,0,0,0.15)",
-          background: t.type==="success"?"#16a34a":t.type==="error"?"#dc2626":"#2563eb",
-          animation:"slideIn 0.2s ease" }}>{t.msg}</div>
-      ))}
+    <div style={{ position:"fixed", top:72, right:24, zIndex:9999, display:"flex", flexDirection:"column", gap:10 }}>
+      {toasts.slice(0,3).map(t => {
+        const m = meta[t.type] || meta.info;
+        return (
+          <div key={t.id} style={{ background:"var(--bg-elevated)", border:"1px solid var(--border-default)",
+            borderLeft:"3px solid "+m.c, borderRadius:12, padding:"12px 16px", minWidth:280, color:"var(--text-primary)",
+            boxShadow:"0 8px 32px rgba(0,0,0,0.4)", display:"flex", alignItems:"center", gap:12, fontSize:14, fontWeight:500,
+            animation:"ercToastIn 0.3s cubic-bezier(0.2,0.9,0.3,1.2)" }}>
+            <span style={{ width:22, height:22, borderRadius:"50%", background:m.c, color:"#03070f", display:"inline-flex",
+              alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:800, flexShrink:0 }}>{m.icon}</span>
+            <span style={{ flex:1 }}>{t.msg}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -161,7 +252,7 @@ function useToast() {
   const toast = useCallback((msg, type) => {
     const id = Math.random().toString(36).slice(2);
     setToasts(p => [...p, { id, msg, type:type||"info" }]);
-    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3500);
+    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3000);
   }, []);
   return [toasts, toast];
 }
@@ -169,28 +260,51 @@ function useToast() {
 // ─── Password Strength Bar ────────────────────────────────────────────────────
 function StrengthBar({ password }) {
   const s = pwStrength(password || "");
-  const colors = ["#dc2626","#dc2626","#f59e0b","#f59e0b","#16a34a"];
+  const colors = ["var(--danger)","var(--danger)","var(--warning)","var(--warning)","var(--success)"];
   const labels = ["","Weak","Weak","Fair","Good","Strong"];
   if (!password) return null;
   return (
-    <div style={{ marginTop:6 }}>
+    <div style={{ marginTop:8 }}>
       <div style={{ display:"flex", gap:4, marginBottom:4 }}>
         {[1,2,3,4,5].map(i => (
-          <div key={i} style={{ flex:1, height:4, borderRadius:2, background: i<=s ? colors[s-1] : "#e5e9f0" }} />
+          <div key={i} style={{ flex:1, height:4, borderRadius:2, transition:"all .2s ease",
+            background: i<=s ? colors[s-1] : "var(--bg-highlight)" }} />
         ))}
       </div>
-      <div style={{ fontSize:12, color:colors[s-1]||"#94a3b8" }}>{labels[s]||""}</div>
+      <div style={{ fontSize:12, color:colors[s-1]||"var(--text-muted)" }}>{labels[s]||""}</div>
     </div>
   );
 }
 
 // ─── Team Badge ───────────────────────────────────────────────────────────────
 function TeamBadge({ team, small }) {
-  const st = TEAM_STYLES[team] || { bg:"#f1f5f9", color:"#64748b", border:"#e5e9f0" };
+  const st = TEAM_STYLES[team] || { bg:"rgba(255,255,255,0.06)", color:"var(--text-secondary)", border:"var(--border-default)" };
   return (
     <span style={{ background:st.bg, color:st.color, border:"1px solid "+st.border,
       borderRadius:20, padding:small?"2px 8px":"3px 10px",
-      fontSize:small?11:12, fontWeight:600, display:"inline-block" }}>{team}</span>
+      fontSize:small?11:12, fontWeight:600, display:"inline-block", textTransform:"capitalize" }}>{team}</span>
+  );
+}
+
+// ─── Aurora background (login) ───────────────────────────────────────────────
+function Aurora() {
+  const blobs = [
+    { top:"-10%", left:"-5%", size:520, color:"rgba(245,184,0,0.07)", dur:"62s" },
+    { top:"20%", right:"-10%", size:480, color:"rgba(96,165,250,0.06)", dur:"74s" },
+    { bottom:"-15%", left:"15%", size:560, color:"rgba(245,184,0,0.05)", dur:"68s" },
+    { top:"40%", left:"30%", size:420, color:"rgba(167,139,250,0.05)", dur:"80s" },
+    { bottom:"5%", right:"10%", size:440, color:"rgba(96,165,250,0.05)", dur:"58s" },
+    { top:"-5%", right:"25%", size:380, color:"rgba(245,184,0,0.04)", dur:"70s" },
+  ];
+  return (
+    <div style={{ position:"fixed", inset:0, overflow:"hidden", pointerEvents:"none", zIndex:0 }}>
+      {blobs.map((b,i)=>(
+        <div key={i} style={{ position:"absolute", top:b.top, left:b.left, right:b.right, bottom:b.bottom,
+          width:b.size, height:b.size, borderRadius:"50%", filter:"blur(80px)",
+          background:`radial-gradient(circle, ${b.color} 0%, transparent 70%)`,
+          animation:`ercFloat ${b.dur} ease-in-out infinite` }} />
+      ))}
+    </div>
   );
 }
 
@@ -202,14 +316,15 @@ function LoginScreen({ onLogin }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [attempts, setAttempts] = useState(0);
+  const [shakeKey, setShakeKey] = useState(0);
 
   const isLocalhost = ["localhost","127.0.0.1"].includes(window.location.hostname);
   const DEMO = [
-    { role:"Admin", username:"alex", password:"Admin@123!" },
-    { role:"Engineering", username:"sam", password:"Eng@123!" },
-    { role:"Marketing", username:"morgan", password:"Mkt@123!" },
-    { role:"Design", username:"jordan", password:"Des@123!" },
-    { role:"Ops", username:"casey", password:"Ops@123!" },
+    { role:"admin", username:"alex", password:"Admin@123!" },
+    { role:"engineering", username:"sam", password:"Eng@123!" },
+    { role:"marketing", username:"morgan", password:"Mkt@123!" },
+    { role:"design", username:"jordan", password:"Des@123!" },
+    { role:"ops", username:"casey", password:"Ops@123!" },
   ];
 
   const handleSubmit = async (e) => {
@@ -220,7 +335,7 @@ function LoginScreen({ onLogin }) {
         email: usernameToEmail(username), password,
       });
       if (authErr) {
-        const n = attempts + 1; setAttempts(n);
+        const n = attempts + 1; setAttempts(n); setShakeKey(k=>k+1);
         setError(n >= 5 ? "Too many failed attempts. Please wait a moment and try again." :
           `Invalid username or password. ${5 - n} attempt(s) before a cooldown.`);
         return;
@@ -243,63 +358,62 @@ function LoginScreen({ onLogin }) {
     }
   };
 
-  const darkInput = { ...S.input(), background:"rgba(255,255,255,0.05)", color:"#fff",
-    border:"1px solid rgba(255,255,255,0.12)" };
+  const fieldErr = !!error;
+  const dInput = { ...S.input(), background:"rgba(0,0,0,0.35)", borderColor: fieldErr ? "rgba(239,68,68,0.5)" : "var(--border-default)" };
 
   return (
-    <div style={{ minHeight:"100vh", background:"#060d1a", display:"flex",
-      alignItems:"center", justifyContent:"center", flexDirection:"column", padding:20 }}>
-      <div style={{ background:"#0f1a2e", borderRadius:20, padding:40, width:"100%", maxWidth:420,
-        boxShadow:"0 20px 60px rgba(0,0,0,0.5)", border:"1px solid rgba(245,158,11,0.15)" }}>
-        <div style={{ textAlign:"center", marginBottom:32 }}>
-          <div style={{ fontSize:40, marginBottom:8 }}>🔐</div>
-          <h1 style={{ color:"#fff", fontSize:26, fontWeight:700, letterSpacing:-0.5 }}>VaultAccess</h1>
-          <p style={{ color:"#64748b", fontSize:14, marginTop:4 }}>Secure credential management</p>
+    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center",
+      justifyContent:"center", flexDirection:"column", padding:20, position:"relative" }}>
+      <Aurora />
+      <div style={{ position:"relative", zIndex:1, width:"100%", maxWidth:440, display:"flex", flexDirection:"column", alignItems:"center" }}>
+        <div style={{ textAlign:"center", marginBottom:28 }}>
+          <div style={{ width:64, height:64, margin:"0 auto 16px", borderRadius:18, fontSize:34,
+            background:"linear-gradient(135deg,#f5b800,#d4960a)", display:"flex", alignItems:"center", justifyContent:"center",
+            boxShadow:"0 8px 32px rgba(245,184,0,0.4)" }}>🦅</div>
+          <h1 style={{ color:"var(--text-primary)", fontSize:28, fontWeight:800, letterSpacing:-1 }}>Eagle RCM</h1>
+          <p style={{ color:"var(--text-secondary)", fontSize:13, marginTop:6 }}>Credential intelligence for high-performing teams</p>
         </div>
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom:16 }}>
-            <label style={{ ...S.label, color:"#94a3b8" }}>Username</label>
-            <input value={username} onChange={e=>setUsername(e.target.value)}
-              style={darkInput} placeholder="Enter username" autoFocus />
-          </div>
-          <div style={{ marginBottom:20, position:"relative" }}>
-            <label style={{ ...S.label, color:"#94a3b8" }}>Password</label>
-            <input type={showPw?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)}
-              style={{ ...darkInput, paddingRight:44 }} placeholder="Enter password" />
-            <button type="button" onClick={()=>setShowPw(p=>!p)}
-              style={{ position:"absolute", right:12, top:32, background:"none", border:"none",
-                cursor:"pointer", color:"#64748b", fontSize:16, padding:0 }}>{showPw?"🙈":"👁"}</button>
-          </div>
-          {error && <div style={{ background:"rgba(220,38,38,0.1)", border:"1px solid rgba(220,38,38,0.3)",
-            color:"#fca5a5", borderRadius:8, padding:"10px 14px", fontSize:13, marginBottom:16 }}>{error}</div>}
-          <button type="submit" disabled={busy} style={{ ...S.btn("primary"), width:"100%", padding:"12px",
-            fontSize:16, justifyContent:"center", opacity:busy?0.7:1 }}>{busy?"Signing in…":"Sign In"}</button>
-        </form>
-      </div>
 
-      {isLocalhost && (
-        <div style={{ marginTop:24, background:"#0f1a2e", borderRadius:16, padding:24,
-          width:"100%", maxWidth:520, border:"1px solid rgba(245,158,11,0.2)" }}>
-          <h3 style={{ color:"#f59e0b", fontSize:14, fontWeight:700, marginBottom:12 }}>Demo Logins (dev only)</h3>
-          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-            <thead><tr>
-              {["Role","Username","Password"].map(h=>(
-                <th key={h} style={{ color:"#64748b", fontWeight:600, textAlign:"left",
-                  padding:"6px 8px", borderBottom:"1px solid rgba(255,255,255,0.08)" }}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {DEMO.map(d=>(
-                <tr key={d.username}>
-                  <td style={{ color:"#94a3b8", padding:"6px 8px" }}>{d.role}</td>
-                  <td style={{ color:"#e2e8f0", padding:"6px 8px", fontFamily:"monospace" }}>{d.username}</td>
-                  <td style={{ color:"#e2e8f0", padding:"6px 8px", fontFamily:"monospace" }}>{d.password}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+        <form key={shakeKey} onSubmit={handleSubmit} style={{ width:"100%", ...glass, borderTop:"1px solid rgba(245,184,0,0.3)",
+          padding:32, animation: fieldErr ? "ercShake 0.3s ease" : "none" }}>
+          <div style={{ marginBottom:16 }}>
+            <label style={S.label}>Username</label>
+            <input value={username} onChange={e=>{setUsername(e.target.value); setError("");}} style={dInput} placeholder="Enter username" autoFocus />
+          </div>
+          <div style={{ marginBottom:18, position:"relative" }}>
+            <label style={S.label}>Password</label>
+            <input type={showPw?"text":"password"} value={password} onChange={e=>{setPassword(e.target.value); setError("");}}
+              style={{ ...dInput, paddingRight:44 }} placeholder="Enter password" />
+            <button type="button" onClick={()=>setShowPw(p=>!p)}
+              style={{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--text-muted)", fontSize:16, padding:0 }}>{showPw?"🙈":"👁"}</button>
+          </div>
+          {error && <div style={{ background:"var(--danger-bg)", border:"1px solid rgba(239,68,68,0.3)",
+            color:"#fca5a5", borderRadius:10, padding:"10px 14px", fontSize:13, marginBottom:16 }}>{error}</div>}
+          <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), width:"100%", height:48,
+            fontSize:14, justifyContent:"center", opacity:busy?0.7:1 }}>{busy?"Signing in…":"Sign In"}</button>
+        </form>
+
+        {isLocalhost && (
+          <div style={{ marginTop:24, width:"100%" }}>
+            <div style={{ ...microLabel, color:"var(--text-muted)", marginBottom:10 }}>Demo accounts</div>
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {DEMO.map(d=>{
+                const st = TEAM_STYLES[d.role];
+                return (
+                  <button key={d.username} type="button" className="erc-card"
+                    onClick={()=>{ setUsername(d.username); setPassword(d.password); setError(""); }}
+                    style={{ ...glass, padding:"10px 14px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", textAlign:"left" }}>
+                    <span style={{ width:32, height:32, borderRadius:"50%", background:st.bg, color:st.color, border:"1px solid "+st.border,
+                      display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:12 }}>{getInitials(d.username)}</span>
+                    <span style={{ fontFamily:"var(--font-mono)", fontSize:13, color:"var(--text-primary)", flex:1 }}>{d.username}</span>
+                    <TeamBadge team={d.role} small />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -312,7 +426,7 @@ function TOTPScreen({ user, onVerify, onBack }) {
   const handleVerify = () => {
     setError("");
     const secret = OTPAuth.Secret.fromBase32(user.twoFactorSecret);
-    const totp = new OTPAuth.TOTP({ issuer:"VaultAccess", label:user.username,
+    const totp = new OTPAuth.TOTP({ issuer:"Eagle RCM", label:user.username,
       algorithm:"SHA1", digits:6, period:30, secret });
     if (totp.validate({ token:code.trim(), window:1 }) === null) { setError("Invalid code. Please try again."); return; }
     setSession({ userId:user.id, userName:user.name, team:user.team,
@@ -323,21 +437,20 @@ function TOTPScreen({ user, onVerify, onBack }) {
   const back = async () => { await supabase.auth.signOut(); onBack(); };
 
   return (
-    <div style={{ minHeight:"100vh", background:"#060d1a", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-      <div style={{ background:"#0f1a2e", borderRadius:20, padding:40, width:"100%", maxWidth:380,
-        boxShadow:"0 20px 60px rgba(0,0,0,0.5)", border:"1px solid rgba(245,158,11,0.15)" }}>
+    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center", justifyContent:"center", padding:20, position:"relative" }}>
+      <Aurora />
+      <div style={{ position:"relative", zIndex:1, ...glass, borderTop:"1px solid rgba(245,184,0,0.3)", padding:36, width:"100%", maxWidth:380 }}>
         <div style={{ textAlign:"center", marginBottom:24 }}>
-          <div style={{ fontSize:32, marginBottom:8 }}>🔒</div>
-          <h2 style={{ color:"#fff", fontSize:20, fontWeight:700 }}>Two-Factor Authentication</h2>
-          <p style={{ color:"#64748b", fontSize:13, marginTop:6 }}>Enter the 6-digit code from your authenticator app</p>
+          <div style={{ fontSize:30, marginBottom:8 }}>🔒</div>
+          <h2 style={{ color:"var(--text-primary)", fontSize:20, fontWeight:700 }}>Two-Factor Authentication</h2>
+          <p style={{ color:"var(--text-secondary)", fontSize:13, marginTop:6 }}>Enter the 6-digit code from your authenticator app</p>
         </div>
         <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))}
-          style={{ ...S.input(), background:"rgba(255,255,255,0.05)", color:"#fff",
-            border:"1px solid rgba(255,255,255,0.12)", textAlign:"center", fontSize:24, letterSpacing:8, marginBottom:12 }}
+          style={{ ...S.input(), textAlign:"center", fontSize:24, letterSpacing:8, marginBottom:12, fontFamily:"var(--font-mono)" }}
           placeholder="000000" maxLength={6} />
         {error && <div style={{ color:"#fca5a5", fontSize:13, marginBottom:12, textAlign:"center" }}>{error}</div>}
-        <button onClick={handleVerify} style={{ ...S.btn("primary"), width:"100%", padding:12, fontSize:15, marginBottom:12, justifyContent:"center" }}>Verify</button>
-        <button onClick={back} style={{ background:"none", border:"none", cursor:"pointer", color:"#64748b", fontSize:13, width:"100%", textAlign:"center" }}>← Back to login</button>
+        <button onClick={handleVerify} className="erc-prim" style={{ ...S.btn("primary"), width:"100%", height:46, fontSize:15, marginBottom:12, justifyContent:"center" }}>Verify</button>
+        <button onClick={back} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--text-secondary)", fontSize:13, width:"100%", textAlign:"center" }}>← Back to login</button>
       </div>
     </div>
   );
@@ -345,18 +458,24 @@ function TOTPScreen({ user, onVerify, onBack }) {
 
 // ─── Inactivity Modal ─────────────────────────────────────────────────────────
 function InactivityModal({ countdown, onStay, onLogout }) {
+  const R = 54, CIRC = 2 * Math.PI * R;
+  const pct = Math.max(0, Math.min(1, countdown / 60));
+  const ringColor = countdown > 30 ? "var(--success)" : countdown > 10 ? "var(--warning)" : "var(--danger)";
   return (
-    <div style={S.overlay}>
-      <div style={{ background:"#fff", borderRadius:16, padding:32, maxWidth:380, width:"90%", textAlign:"center" }}>
-        <div style={{ fontSize:40, marginBottom:12 }}>⏰</div>
-        <h3 style={{ fontSize:18, fontWeight:700, color:"#0f172a", marginBottom:8 }}>Session Expiring</h3>
-        <p style={{ color:"#64748b", marginBottom:20, fontSize:14 }}>
-          You will be logged out in <strong style={{ color:"#dc2626" }}>{countdown}s</strong> due to inactivity.
-        </p>
-        <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-          <button onClick={onStay} style={S.btn("primary")}>Stay Logged In</button>
-          <button onClick={onLogout} style={S.btn("danger")}>Log Out</button>
+    <div style={{ ...S.overlay, background:"rgba(3,7,15,0.92)" }}>
+      <div style={{ ...glass, padding:36, maxWidth:400, width:"90%", textAlign:"center" }}>
+        <div style={{ position:"relative", width:140, height:140, margin:"0 auto 20px" }}>
+          <svg width="140" height="140" style={{ transform:"rotate(-90deg)" }}>
+            <circle cx="70" cy="70" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" />
+            <circle cx="70" cy="70" r={R} fill="none" stroke={ringColor} strokeWidth="8" strokeLinecap="round"
+              strokeDasharray={CIRC} strokeDashoffset={CIRC*(1-pct)} style={{ transition:"stroke-dashoffset 1s linear, stroke .3s" }} />
+          </svg>
+          <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center",
+            fontSize:48, fontWeight:800, fontFamily:"var(--font-mono)", color:"var(--gold-bright)" }}>{countdown}</div>
         </div>
+        <h3 style={{ fontSize:20, fontWeight:700, color:"var(--text-primary)", marginBottom:8 }}>Session expiring</h3>
+        <p style={{ color:"var(--text-secondary)", marginBottom:22, fontSize:14 }}>You'll be signed out due to inactivity.</p>
+        <button onClick={onStay} className="erc-prim" style={{ ...S.btn("primary"), width:"100%", height:46, justifyContent:"center" }}>Stay Logged In</button>
       </div>
     </div>
   );
@@ -364,185 +483,184 @@ function InactivityModal({ countdown, onStay, onLogout }) {
 
 // ─── Credential Card ──────────────────────────────────────────────────────────
 function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
-  requests, onRequestAccess, toast, onPatch }) {
+  requests, onRequestAccess, toast, onPatch, index }) {
   const [showPw, setShowPw] = useState(false);
+  const [copied, setCopied] = useState(null);
   const hasAccess = canAccess(cred, session.team);
   const isAdmin = session.team === "admin";
   const age = daysSince(cred.updatedAt);
-  const ageColor = age < 30 ? "#16a34a" : age < 60 ? "#f59e0b" : "#dc2626";
+  const ageColor = age < 30 ? "var(--success)" : age < 60 ? "var(--warning)" : "var(--danger)";
   const catIcon = CAT_ICONS[cred.category] || CAT_ICONS.Default;
+  const catTint = CAT_TINT[cred.category] || CAT_TINT.Default;
   const pendingReq = requests.find(r => r.credentialId===cred.id && r.requesterId===session.userId && r.status==="pending");
   const expiryDays = cred.passwordExpiryDays || 90;
   const daysLeft = expiryDays - age;
 
-  // Time restriction — evaluated every render against the current moment.
   const tr = evalTimeRestriction(cred.timeRestriction);
   const lockedByTime = tr.state === "expired";
   const cardExtra =
-    tr.state === "expired" ? { borderLeft:"4px solid #ef4444", background:"rgba(239,68,68,0.04)" } :
-    (tr.state === "outside" || tr.state === "wrongday" || tr.state === "expiring") ? { borderLeft:"4px solid #f59e0b" } : {};
+    tr.state === "expired" ? { borderLeft:"4px solid var(--danger)", background:"linear-gradient(135deg, rgba(239,68,68,0.06), rgba(19,32,53,0.85))" } :
+    (tr.state === "outside" || tr.state === "wrongday" || tr.state === "expiring") ? { borderLeft:"4px solid var(--warning)" } :
+    isFav ? { borderTop:"2px solid rgba(245,184,0,0.4)" } : {};
 
   const hasVerify = !!(cred.verifyEmail || cred.verifyText || cred.verifyAuth);
+  const flash = (key) => { setCopied(key); setTimeout(()=>setCopied(c=>c===key?null:c), 2000); };
 
-  const handleCopyField = (value, field) => {
+  const handleCopyField = (value, field, key) => {
     if (!hasAccess || lockedByTime) return;
-    navigator.clipboard.writeText(value).then(() => {
-      onCopy && onCopy(cred, field);
-      toast && toast(field + " copied!", "success");
-    });
+    navigator.clipboard.writeText(value).then(() => { onCopy && onCopy(cred, field); flash(key); toast && toast(field + " copied!", "success"); });
   };
-  const handleCopyVerify = (value, field) => {
+  const handleCopyVerify = (value, field, key) => {
     if (!hasAccess || lockedByTime) return;
-    navigator.clipboard.writeText(value).then(() => {
-      onCopyVerify && onCopyVerify(cred, field);
-      toast && toast(field + " copied!", "success");
-    });
+    navigator.clipboard.writeText(value).then(() => { onCopyVerify && onCopyVerify(cred, field); flash(key); toast && toast(field + " copied!", "success"); });
   };
+
+  const FieldRow = ({ label, value, masked, copyKey, field, extraBg, showToggle }) => (
+    <div style={{ ...fieldBox, ...(extraBg?{ background:extraBg }:{}) }}>
+      <div style={{ ...microLabel, marginBottom:4 }}>{label}</div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+        {hasAccess ? <code style={monoVal(masked && !showPw)}>{value}</code> : <span style={{ fontSize:13, color:"var(--text-muted)", flex:1 }}>No access</span>}
+        {hasAccess && (
+          <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+            {showToggle && <button onClick={()=>setShowPw(p=>!p)} disabled={lockedByTime} style={iconBtn(false, lockedByTime)}>{showPw?"🙈":"👁"}</button>}
+            <button onClick={()=>handleCopyField(field==="verify"?value:value, label, copyKey)} disabled={lockedByTime}
+              style={iconBtn(copied===copyKey, lockedByTime)}>{copied===copyKey?"✓":"📋"}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
-    <div style={{ ...S.card(), ...cardExtra, display:"flex", flexDirection:"column", gap:12 }}>
+    <div className="erc-card" style={{ ...S.card(), ...cardExtra, display:"flex", flexDirection:"column", gap:12,
+      animation:`ercCardIn 0.3s ease-out both`, animationDelay:`${(index||0)*40}ms` }}>
+      {/* Header */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4, flexWrap:"wrap" }}>
-            <span style={{ fontSize:18 }}>{catIcon}</span>
-            <span style={{ fontWeight:700, fontSize:15, color:"#0f172a" }}>{cred.portal}</span>
-            {cred.needsRotation && (
-              <span style={{ background:"#fee2e2", color:"#dc2626", border:"1px solid #fca5a5",
-                borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:700 }}>Needs Rotation</span>
+        <div style={{ display:"flex", gap:10, flex:1, minWidth:0 }}>
+          <span style={{ width:36, height:36, borderRadius:"50%", background:catTint, display:"inline-flex",
+            alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>{catIcon}</span>
+          <div style={{ minWidth:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+              <span style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)" }}>{cred.portal}</span>
+              {cred.needsRotation && (
+                <span style={{ background:"var(--danger-bg)", color:"#fca5a5", border:"1px solid rgba(239,68,68,0.3)",
+                  borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>Needs Rotation</span>
+              )}
+            </div>
+            {cred.url && <a href={"https://"+cred.url} target="_blank" rel="noreferrer" style={{ color:"var(--text-secondary)", fontSize:12, textDecoration:"none" }}>🔗 {cred.url}</a>}
+            {cred.client && (
+              <div style={{ marginTop:3 }}>
+                <span style={{ background:"var(--info-bg)", color:"var(--info)", border:"1px solid rgba(96,165,250,0.3)",
+                  borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>🏢 {cred.client}</span>
+              </div>
             )}
           </div>
-          {cred.url && (
-            <a href={"https://"+cred.url} target="_blank" rel="noreferrer"
-              style={{ color:"#64748b", fontSize:12, textDecoration:"none" }}>🔗 {cred.url}</a>
-          )}
-          {cred.client && (
-            <div style={{ marginTop:3 }}>
-              <span style={{ background:"#f0f4ff", color:"#3b52a0", border:"1px solid #c7d2fe",
-                borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>🏢 {cred.client}</span>
-            </div>
-          )}
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
-          <span style={{ background:"#f1f5f9", color:"#64748b", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>{cred.category}</span>
-          <button onClick={()=>onFavToggle(cred.id)}
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:20, color:isFav?"#f59e0b":"#d1d5db", padding:0 }}>★</button>
+          <span style={{ background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid var(--border-subtle)",
+            borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>{cred.category}</span>
+          <button onClick={()=>onFavToggle(cred.id)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:20,
+            color:isFav?"var(--gold-bright)":"var(--text-muted)", padding:0 }}>★</button>
         </div>
       </div>
 
-      {/* Time-restriction status */}
+      <div style={{ height:1, background:"var(--border-subtle)" }} />
+
+      {/* Time status badges/banners */}
       {tr.state==="active" && (
-        <span style={{ alignSelf:"flex-start", background:"#dcfce7", color:"#166534", border:"1px solid #bbf7d0",
+        <span style={{ alignSelf:"flex-start", background:"var(--success-bg)", color:"var(--success)", border:"1px solid rgba(16,185,129,0.3)",
           borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:700 }}>🟢 Active now</span>
       )}
       {tr.state==="schedule" && tr.note && (
-        <span style={{ alignSelf:"flex-start", background:"#eff6ff", color:"#1e40af", border:"1px solid #bfdbfe",
+        <span style={{ alignSelf:"flex-start", background:"var(--info-bg)", color:"var(--info)", border:"1px solid rgba(96,165,250,0.3)",
           borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>ℹ️ {tr.note}</span>
       )}
       {(tr.state==="outside" || tr.state==="wrongday" || tr.state==="expiring") && (
-        <div style={{ background:"#fffbeb", border:"1px solid #fde68a", color:"#92400e",
-          borderRadius:8, padding:"8px 12px", fontSize:12, fontWeight:600 }}>
-          {tr.state==="expiring" ? "⚠️" : "⏰"} {tr.label}
-        </div>
+        <div style={{ background:"var(--warning-bg)", border:"1px solid rgba(245,158,11,0.3)", color:"#fcd34d",
+          borderRadius:10, padding:"8px 12px", fontSize:12, fontWeight:600 }}>{tr.state==="expiring" ? "⚠️" : "⏰"} {tr.label}</div>
       )}
       {tr.state==="expired" && (
-        <div style={{ background:"#fef2f2", border:"1px solid #fecaca", color:"#b91c1c",
-          borderRadius:8, padding:"8px 12px", fontSize:12, fontWeight:600 }}>
-          🔴 {tr.label}
-        </div>
+        <div style={{ background:"var(--danger-bg)", border:"1px solid rgba(239,68,68,0.3)", color:"#fca5a5",
+          borderRadius:10, padding:"8px 12px", fontSize:12, fontWeight:600 }}>🔴 {tr.label}</div>
       )}
 
-      <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px" }}>
-        <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2, fontWeight:600 }}>USERNAME</div>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-          <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace", wordBreak:"break-all", flex:1 }}>{cred.username}</code>
-          {hasAccess && (
-            <button onClick={()=>handleCopyField(cred.username,"Username")} disabled={lockedByTime}
-              style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, flexShrink:0, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>Copy</button>
-          )}
-        </div>
-      </div>
-
-      <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px" }}>
-        <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2, fontWeight:600 }}>PASSWORD</div>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-          {hasAccess ? (
-            <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace", flex:1, wordBreak:"break-all" }}>
-              {showPw ? cred.password : "•".repeat(Math.min(cred.password.length, 16))}
-            </code>
-          ) : (
-            <span style={{ fontSize:13, color:"#94a3b8", flex:1 }}>No access</span>
-          )}
-          {hasAccess && (
-            <div style={{ display:"flex", gap:4, flexShrink:0 }}>
-              <button onClick={()=>setShowPw(p=>!p)} disabled={lockedByTime} style={{ ...S.btn("ghost"), padding:"4px 8px", fontSize:12, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>{showPw?"Hide":"Show"}</button>
-              <button onClick={()=>handleCopyField(cred.password,"Password")} disabled={lockedByTime} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>Copy</button>
-            </div>
-          )}
-        </div>
-      </div>
+      <FieldRow label="USERNAME" value={cred.username} field={cred.username} copyKey="user" />
+      <FieldRow label="PASSWORD" value={showPw ? cred.password : "•".repeat(Math.min((cred.password||"").length, 16))}
+        masked field={cred.password} copyKey="pass" showToggle />
 
       {hasVerify && (
-        <div style={{ background:"#f0f4f8", borderRadius:8, padding:"8px 12px", display:"flex", flexDirection:"column", gap:8 }}>
-          <div style={{ fontSize:11, color:"#94a3b8", fontWeight:600 }}>VERIFICATION</div>
-          {[["📧","Email verification",cred.verifyEmail],["💬","Text verification",cred.verifyText],["🔐","Auth verification",cred.verifyAuth]]
-            .filter(([,,v])=>v).map(([icon,field,value])=>(
-            <div key={field} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-              <code style={{ fontSize:13, color:"#0f172a", fontFamily:"'JetBrains Mono',monospace", wordBreak:"break-all", flex:1 }}>{icon} {value}</code>
+        <div style={{ background:"var(--info-bg)", border:"1px solid rgba(96,165,250,0.12)", borderRadius:10, padding:"10px 12px", display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ ...microLabel, color:"var(--info)" }}>VERIFICATION</div>
+          {[["📧","Email verification",cred.verifyEmail,"vEmail"],["💬","Text verification",cred.verifyText,"vText"],["🔐","Auth verification",cred.verifyAuth,"vAuth"]]
+            .filter(([,,v])=>v).map(([icon,field,value,key])=>(
+            <div key={key} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+              <code style={monoVal(false)}>{icon} {value}</code>
               {hasAccess && (
-                <button onClick={()=>handleCopyVerify(value, field)} disabled={lockedByTime}
-                  style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, flexShrink:0, opacity:lockedByTime?0.4:1, cursor:lockedByTime?"not-allowed":"pointer" }}>Copy</button>
+                <button onClick={()=>handleCopyVerify(value, field, key)} disabled={lockedByTime} style={iconBtn(copied===key, lockedByTime)}>{copied===key?"✓":"📋"}</button>
               )}
             </div>
           ))}
         </div>
       )}
 
-      <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, flexWrap:"wrap" }}>
-        <span style={{ width:8, height:8, borderRadius:"50%", background:ageColor, display:"inline-block" }}/>
-        <span style={{ color:ageColor, fontWeight:600 }}>{age}d old</span>
-        <span style={{ color:"#94a3b8" }}>·</span>
-        <span style={{ color:daysLeft<=0?"#dc2626":daysLeft<=7?"#f59e0b":"#94a3b8" }}>
-          {daysLeft<=0 ? "Expired" : daysLeft+"d until expiry"}
-        </span>
-      </div>
-
+      {/* Footer */}
       <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
         {cred.teams==="all"
-          ? <span style={{ background:"#f0fdf4", color:"#166534", border:"1px solid #bbf7d0", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>All Teams</span>
+          ? <span style={{ background:"var(--success-bg)", color:"var(--success)", border:"1px solid rgba(16,185,129,0.3)", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>All Teams</span>
           : (cred.teams||[]).map(t=><TeamBadge key={t} team={t} small />)}
       </div>
 
-      <div style={{ fontSize:11, color:"#94a3b8", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, flexWrap:"wrap" }}>
+        <span style={{ width:8, height:8, borderRadius:"50%", background:ageColor, display:"inline-block" }}/>
+        <span style={{ color:ageColor, fontWeight:600 }}>{age}d old</span>
+        <span style={{ color:"var(--text-muted)" }}>·</span>
+        <span style={{ color:daysLeft<=0?"var(--danger)":daysLeft<=7?"var(--warning)":"var(--text-muted)" }}>{daysLeft<=0 ? "Expired" : daysLeft+"d until expiry"}</span>
+      </div>
+
+      <div style={{ fontSize:11, color:"var(--text-muted)", borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
         Added {timeAgo(cred.addedAt)} by {cred.addedBy}
       </div>
 
       {isAdmin && (
-        <div style={{ display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
-          <button onClick={()=>onEdit(cred)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>✏️ Edit</button>
-          <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"4px 10px", fontSize:12 }}>🗑️ Delete</button>
-          <button onClick={()=>onPatch(cred.id,{ needsRotation:!cred.needsRotation })}
-            style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, color:cred.needsRotation?"#dc2626":"#64748b" }}>
-            🔄 {cred.needsRotation?"Clear Rotation":"Flag Rotation"}
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
+          <button onClick={()=>onEdit(cred)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>✏️ Edit</button>
+          <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"5px 10px", fontSize:12 }}>🗑️ Delete</button>
+          <button onClick={()=>onPatch(cred.id,{ needsRotation:!cred.needsRotation })} className="erc-ghost"
+            style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12, color:cred.needsRotation?"#fca5a5":"var(--text-secondary)" }}>
+            🔁 {cred.needsRotation?"Clear Rotation":"Flag Rotation"}
           </button>
           <select value={cred.passwordExpiryDays||90} onChange={e=>onPatch(cred.id,{ passwordExpiryDays:+e.target.value })}
-            style={{ ...S.input(), width:"auto", padding:"4px 8px", fontSize:12 }}>
+            style={{ ...S.input(), width:"auto", padding:"5px 8px", fontSize:12 }}>
             {[30,60,90,180].map(d=><option key={d} value={d}>{d}d expiry</option>)}
           </select>
           {cred.timeRestriction && cred.timeRestriction.enabled && (
-            <button onClick={()=>onPatch(cred.id,{ timeRestriction:null })}
-              style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12, color:"#b91c1c" }}>⏱️ Clear restriction</button>
+            <button onClick={()=>onPatch(cred.id,{ timeRestriction:null })} className="erc-ghost"
+              style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12, color:"#fca5a5" }}>⏱️ Clear restriction</button>
           )}
         </div>
       )}
 
       {!hasAccess && session.team!=="admin" && (
-        <div style={{ borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
+        <div style={{ borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
           {pendingReq
-            ? <span style={{ background:"#fef3c7", color:"#92400e", border:"1px solid #fde68a", borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:600 }}>Request Pending</span>
-            : <button onClick={()=>onRequestAccess(cred)} style={{ ...S.btn("ghost"), fontSize:12, color:"#2563eb", borderColor:"#bfdbfe" }}>🔑 Request Access</button>}
+            ? <span style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.3)", borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:600 }}>Request Pending</span>
+            : <button onClick={()=>onRequestAccess(cred)} className="erc-ghost" style={{ ...S.btn("ghost"), fontSize:12, color:"var(--info)", borderColor:"rgba(96,165,250,0.3)" }}>🔑 Request Access</button>}
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Collapsible section header (modal) ──────────────────────────────────────
+function CollapseHead({ open, onClick, children }) {
+  return (
+    <button type="button" onClick={onClick} className="erc-pill"
+      style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+        background:"transparent", border:"1px dashed var(--border-default)", borderRadius:10, padding:"12px",
+        cursor:"pointer", fontSize:13, fontWeight:600, color:"var(--text-secondary)" }}>
+      <span>{children}</span>
+      <span style={{ transform:open?"rotate(180deg)":"none", transition:"transform .2s" }}>⌄</span>
+    </button>
   );
 }
 
@@ -590,10 +708,16 @@ function CredModal({ cred, onSave, onClose, session }) {
     } finally { setBusy(false); }
   };
 
+  const dayBtn = (on) => ({ padding:"5px 10px", borderRadius:8, fontSize:12, cursor:"pointer", fontWeight:600,
+    border:"1px solid "+(on?"var(--info)":"var(--border-default)"), background:on?"var(--info-bg)":"rgba(0,0,0,0.3)", color:on?"var(--info)":"var(--text-secondary)" });
+
   return (
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:540, maxHeight:"90vh", overflowY:"auto" }}>
-        <h3 style={{ fontWeight:700, marginBottom:20, color:"#0f172a" }}>{cred?"Edit Credential":"Add Credential"}</h3>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:540, maxHeight:"85vh", overflowY:"auto" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)" }}>{cred?"Edit Credential":"Add Credential"}</h3>
+          <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 10px" }}>✕</button>
+        </div>
         <form onSubmit={handleSubmit}>
           {[["Portal Name","portal",true],["URL","url",false],["Client / Company","client",false],["Username","username",true]].map(([lbl,key,req])=>(
             <div key={key} style={{ marginBottom:14 }}>
@@ -613,16 +737,11 @@ function CredModal({ cred, onSave, onClose, session }) {
               {["Development","Infrastructure","Design","Marketing","Communication"].map(c=>(<option key={c} value={c}>{c}</option>))}
             </select>
           </div>
-          {/* Verification Methods (collapsible) */}
-          <div style={{ marginBottom:14, border:"1px solid #e5e9f0", borderRadius:10, overflow:"hidden" }}>
-            <button type="button" onClick={()=>setShowVerify(v=>!v)}
-              style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
-                background:"#f8fafc", border:"none", padding:"10px 12px", cursor:"pointer", fontSize:13, fontWeight:600, color:"#475569" }}>
-              <span>＋ Add verification info</span>
-              <span style={{ transform:showVerify?"rotate(180deg)":"none", transition:"transform .15s" }}>⌄</span>
-            </button>
+
+          <div style={{ marginBottom:14 }}>
+            <CollapseHead open={showVerify} onClick={()=>setShowVerify(v=>!v)}>＋ Add verification info</CollapseHead>
             {showVerify && (
-              <div style={{ padding:12, display:"flex", flexDirection:"column", gap:12 }}>
+              <div style={{ padding:"14px 2px 2px", display:"flex", flexDirection:"column", gap:12, animation:"ercSlideDown 0.2s ease" }}>
                 {[["📧 Email verification","verifyEmail","e.g. admin@company.com inbox"],
                   ["💬 Text verification","verifyText","e.g. +1 (555) 000-0000"],
                   ["🔐 Auth verification","verifyAuth","e.g. Google Authenticator – Work profile"]].map(([lbl,key,ph])=>(
@@ -635,52 +754,34 @@ function CredModal({ cred, onSave, onClose, session }) {
             )}
           </div>
 
-          {/* Time Restriction (collapsible) */}
-          <div style={{ marginBottom:14, border:"1px solid #e5e9f0", borderRadius:10, overflow:"hidden" }}>
-            <button type="button" onClick={()=>setShowTime(v=>!v)}
-              style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
-                background:"#f8fafc", border:"none", padding:"10px 12px", cursor:"pointer", fontSize:13, fontWeight:600, color:"#475569" }}>
-              <span>⏰ Time Restriction</span>
-              <span style={{ transform:showTime?"rotate(180deg)":"none", transition:"transform .15s" }}>⌄</span>
-            </button>
+          <div style={{ marginBottom:14 }}>
+            <CollapseHead open={showTime} onClick={()=>setShowTime(v=>!v)}>⏰ Time Restriction</CollapseHead>
             {showTime && (
-              <div style={{ padding:12 }}>
-                <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:13, marginBottom:trEnabled?12:0 }}>
-                  <input type="checkbox" checked={trEnabled} onChange={e=>enableTR(e.target.checked)} />
-                  Restrict usage to specific times
+              <div style={{ padding:"14px 2px 2px", animation:"ercSlideDown 0.2s ease" }}>
+                <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:13, color:"var(--text-secondary)", marginBottom:trEnabled?12:0 }}>
+                  <input type="checkbox" checked={trEnabled} onChange={e=>enableTR(e.target.checked)} /> Restrict usage to specific times
                 </label>
                 {trEnabled && (<>
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
                     {[["window","Time Window"],["expiry","Expiry Date"],["schedule","Schedule Note"]].map(([val,lbl])=>(
                       <button key={val} type="button" onClick={()=>setTR({ type:val })}
-                        style={{ ...S.btn(tr.type===val?"primary":"ghost"), padding:"6px 12px", fontSize:12 }}>
-                        {tr.type===val?"● ":"○ "}{lbl}
-                      </button>
+                        style={{ ...S.btn(tr.type===val?"primary":"ghost"), padding:"6px 12px", fontSize:12 }}>{tr.type===val?"● ":"○ "}{lbl}</button>
                     ))}
                   </div>
-
                   {tr.type==="window" && (
                     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
                       <div>
                         <label style={S.label}>Days</label>
                         <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                          {ALL_DAYS.map(d=>{
-                            const on=(tr.windowDays||[]).includes(d);
-                            return <button key={d} type="button" onClick={()=>toggleTRDay(d)}
-                              style={{ padding:"4px 10px", borderRadius:8, fontSize:12, cursor:"pointer", fontWeight:600,
-                                border:"1px solid "+(on?"#3b82f6":"#e5e9f0"), background:on?"#dbeafe":"#f8fafc", color:on?"#1e40af":"#64748b" }}>{d}</button>;
-                          })}
+                          {ALL_DAYS.map(d=>{ const on=(tr.windowDays||[]).includes(d);
+                            return <button key={d} type="button" onClick={()=>toggleTRDay(d)} style={dayBtn(on)}>{d}</button>; })}
                         </div>
                       </div>
                       <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                        <div style={{ flex:1, minWidth:120 }}>
-                          <label style={S.label}>Start</label>
-                          <input type="time" value={tr.windowStart||"09:00"} onChange={e=>setTR({ windowStart:e.target.value })} style={S.input()} />
-                        </div>
-                        <div style={{ flex:1, minWidth:120 }}>
-                          <label style={S.label}>End</label>
-                          <input type="time" value={tr.windowEnd||"18:00"} onChange={e=>setTR({ windowEnd:e.target.value })} style={S.input()} />
-                        </div>
+                        <div style={{ flex:1, minWidth:120 }}><label style={S.label}>Start</label>
+                          <input type="time" value={tr.windowStart||"09:00"} onChange={e=>setTR({ windowStart:e.target.value })} style={S.input()} /></div>
+                        <div style={{ flex:1, minWidth:120 }}><label style={S.label}>End</label>
+                          <input type="time" value={tr.windowEnd||"18:00"} onChange={e=>setTR({ windowEnd:e.target.value })} style={S.input()} /></div>
                       </div>
                       <div>
                         <label style={S.label}>Timezone</label>
@@ -693,23 +794,17 @@ function CredModal({ cred, onSave, onClose, session }) {
                       </div>
                     </div>
                   )}
-
                   {tr.type==="expiry" && (
                     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
                       <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                        <div style={{ flex:1, minWidth:140 }}>
-                          <label style={S.label}>Expiry date</label>
-                          <input type="date" value={tr.expiryDate||""} onChange={e=>setTR({ expiryDate:e.target.value })} style={S.input()} />
-                        </div>
-                        <div style={{ flex:1, minWidth:120 }}>
-                          <label style={S.label}>Time (optional)</label>
-                          <input type="time" value={tr.expiresAt||""} onChange={e=>setTR({ expiresAt:e.target.value })} style={S.input()} />
-                        </div>
+                        <div style={{ flex:1, minWidth:140 }}><label style={S.label}>Expiry date</label>
+                          <input type="date" value={tr.expiryDate||""} onChange={e=>setTR({ expiryDate:e.target.value })} style={S.input()} /></div>
+                        <div style={{ flex:1, minWidth:120 }}><label style={S.label}>Time (optional)</label>
+                          <input type="time" value={tr.expiresAt||""} onChange={e=>setTR({ expiresAt:e.target.value })} style={S.input()} /></div>
                       </div>
-                      <p style={{ fontSize:12, color:"#94a3b8", margin:0 }}>Card will appear locked after this date/time.</p>
+                      <p style={{ fontSize:12, color:"var(--text-muted)", margin:0 }}>Card will appear locked after this date/time.</p>
                     </div>
                   )}
-
                   {tr.type==="schedule" && (
                     <div>
                       <label style={S.label}>Describe when this credential should be used</label>
@@ -721,20 +816,22 @@ function CredModal({ cred, onSave, onClose, session }) {
               </div>
             )}
           </div>
+
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Team Access</label>
-            <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:13 }}>
+            <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:13, color:"var(--text-secondary)" }}>
               <input type="checkbox" checked={teamsAll} onChange={e=>setTeamsAll(e.target.checked)} /> All Teams
             </label>
             {!teamsAll && (
               <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                {TEAMS.filter(t=>t!=="admin").map(t=>(
-                  <label key={t} style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer",
-                    padding:"4px 12px", border:"1px solid "+(selTeams.includes(t)?"#3b82f6":"#e5e9f0"),
-                    borderRadius:20, fontSize:12, background:selTeams.includes(t)?"#dbeafe":"#f8fafc" }}>
-                    <input type="checkbox" checked={selTeams.includes(t)} onChange={()=>toggleTeam(t)} style={{ display:"none" }} />{t}
-                  </label>
-                ))}
+                {TEAMS.filter(t=>t!=="admin").map(t=>{ const on=selTeams.includes(t);
+                  return (
+                    <label key={t} style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer", padding:"5px 12px",
+                      border:"1px solid "+(on?"var(--info)":"var(--border-default)"), borderRadius:20, fontSize:12,
+                      background:on?"var(--info-bg)":"rgba(0,0,0,0.3)", color:on?"var(--info)":"var(--text-secondary)" }}>
+                      <input type="checkbox" checked={on} onChange={()=>toggleTeam(t)} style={{ display:"none" }} />{t}
+                    </label>
+                  ); })}
               </div>
             )}
           </div>
@@ -745,8 +842,8 @@ function CredModal({ cred, onSave, onClose, session }) {
             </select>
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-            <button type="button" onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-            <button type="submit" disabled={busy} style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>{cred?"Save Changes":"Add Credential"}</button>
+            <button type="button" onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+            <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>{cred?"Save Changes":"Add Credential"}</button>
           </div>
         </form>
       </div>
@@ -760,7 +857,9 @@ function UserModal({ user, onSave, onClose }) {
     ? { name:user.name, username:user.username, team:user.team, password:"" }
     : { name:"", username:"", password:"", team:"engineering" });
   const [busy, setBusy] = useState(false);
+  const [pulse, setPulse] = useState(0);
   const set = (k,v) => setForm(p=>({...p,[k]:v}));
+  useEffect(()=>{ setPulse(p=>p+1); }, [form.name, form.team]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -768,18 +867,28 @@ function UserModal({ user, onSave, onClose }) {
     setBusy(true);
     try { await onSave(form); } finally { setBusy(false); }
   };
+  const st = TEAM_STYLES[form.team] || TEAM_STYLES.engineering;
 
   return (
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:460, maxHeight:"90vh", overflowY:"auto" }}>
-        <h3 style={{ fontWeight:700, marginBottom:20, color:"#0f172a" }}>{user?"Edit User":"Add User"}</h3>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:460, maxHeight:"85vh", overflowY:"auto" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)" }}>{user?"Edit User":"Add User"}</h3>
+          <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 10px" }}>✕</button>
+        </div>
+        <div style={{ display:"flex", justifyContent:"center", marginBottom:18 }}>
+          <div key={pulse} style={{ width:56, height:56, borderRadius:"50%", background:st.bg, color:st.color, border:"2px solid "+st.border,
+            display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:18, animation:"ercPulse 0.2s ease" }}>
+            {getInitials(form.name)||"?"}
+          </div>
+        </div>
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Full Name</label>
             <input value={form.name} onChange={e=>set("name",e.target.value)} style={S.input()} required />
           </div>
           <div style={{ marginBottom:14 }}>
-            <label style={S.label}>Username {user && <span style={{ color:"#94a3b8", fontWeight:400 }}>(can't change)</span>}</label>
+            <label style={S.label}>Username {user && <span style={{ color:"var(--text-muted)", fontWeight:400, textTransform:"none", letterSpacing:0 }}>(can't change)</span>}</label>
             <input value={form.username} onChange={e=>set("username",e.target.value)} style={S.input({ opacity:user?0.6:1 })} required disabled={!!user} />
           </div>
           <div style={{ marginBottom:14 }}>
@@ -794,8 +903,8 @@ function UserModal({ user, onSave, onClose }) {
             </select>
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-            <button type="button" onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-            <button type="submit" disabled={busy} style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>{user?"Save Changes":"Add User"}</button>
+            <button type="button" onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+            <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>{user?"Save Changes":"Add User"}</button>
           </div>
         </form>
       </div>
@@ -814,14 +923,14 @@ function ResetPasswordModal({ user, onSubmit, onClose }) {
   };
   return (
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:400 }}>
-        <h3 style={{ fontWeight:700, marginBottom:16, color:"#0f172a" }}>Reset Password: {user.name}</h3>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:400 }}>
+        <h3 style={{ fontWeight:700, marginBottom:16, color:"var(--text-primary)", fontSize:18 }}>Reset Password: {user.name}</h3>
         <label style={S.label}>New Password</label>
         <input type="password" value={pw} onChange={e=>setPw(e.target.value)} style={{ ...S.input(), marginBottom:8 }} autoFocus />
         <StrengthBar password={pw} />
         <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:20 }}>
-          <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-          <button onClick={handleSave} disabled={busy} style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>Reset Password</button>
+          <button onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+          <button onClick={handleSave} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>Reset Password</button>
         </div>
       </div>
     </div>
@@ -846,15 +955,15 @@ function RequestAccessModal({ cred, session, onClose, toast, onDone }) {
   };
   return (
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"90%", maxWidth:420 }}>
-        <h3 style={{ fontWeight:700, marginBottom:8, color:"#0f172a" }}>Request Access</h3>
-        <p style={{ color:"#64748b", fontSize:14, marginBottom:16 }}>Requesting access to: <strong>{cred.portal}</strong></p>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:420 }}>
+        <h3 style={{ fontWeight:700, marginBottom:8, color:"var(--text-primary)", fontSize:18 }}>Request Access</h3>
+        <p style={{ color:"var(--text-secondary)", fontSize:14, marginBottom:16 }}>Requesting access to: <strong style={{ color:"var(--text-primary)" }}>{cred.portal}</strong></p>
         <label style={S.label}>Message (optional)</label>
         <textarea value={message} onChange={e=>setMessage(e.target.value)}
           style={{ ...S.input(), resize:"vertical", minHeight:80, marginBottom:16 }} placeholder="Why do you need access?" />
         <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-          <button onClick={handleSubmit} disabled={busy} style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>Submit Request</button>
+          <button onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+          <button onClick={handleSubmit} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>Submit Request</button>
         </div>
       </div>
     </div>
@@ -875,43 +984,43 @@ function ImportPreviewModal({ rows, existingCreds, onConfirm, onClose }) {
   const valid = processed.filter(r=>r._status==="valid").length;
   const errs = processed.filter(r=>r._status==="error").length;
   const dups = processed.filter(r=>r._status==="duplicate").length;
+  const pill = (c,label) => <span style={{ background:c+"22", color:c, border:"1px solid "+c+"55", borderRadius:20, padding:"3px 10px", fontSize:12, fontWeight:600 }}>{label}</span>;
 
   return (
     <div style={S.overlay}>
-      <div style={{ background:"#fff", borderRadius:16, padding:28, width:"95vw", maxWidth:780, maxHeight:"90vh", overflowY:"auto" }}>
-        <h3 style={{ fontWeight:700, marginBottom:8 }}>Import Preview</h3>
-        <p style={{ color:"#64748b", fontSize:13, marginBottom:16 }}>
-          <span style={{ color:"#16a34a" }}>✓ {valid} valid</span>{"  ·  "}
-          <span style={{ color:"#f59e0b" }}>⚠ {dups} duplicate</span>{"  ·  "}
-          <span style={{ color:"#dc2626" }}>✗ {errs} error</span>
-        </p>
-        <div style={{ maxHeight:340, overflowY:"auto", marginBottom:16 }}>
+      <div style={{ ...S.modal(), padding:28, width:"95vw", maxWidth:780, maxHeight:"85vh", overflowY:"auto" }}>
+        <h3 style={{ fontWeight:700, marginBottom:12, color:"var(--text-primary)", fontSize:18 }}>Import Preview</h3>
+        <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+          {pill("#10b981", `${valid} valid`)}{pill("#ef4444", `${errs} errors`)}{pill("#f59e0b", `${dups} duplicates`)}
+        </div>
+        <div style={{ maxHeight:340, overflowY:"auto", marginBottom:16, border:"1px solid var(--border-subtle)", borderRadius:12 }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
               <tr>{["Status","Portal","URL","Username","Category","Teams"].map(h=>(
-                <th key={h} style={{ background:"#f8fafc", padding:"8px 10px", textAlign:"left",
-                  borderBottom:"1px solid #e5e9f0", fontWeight:600, color:"#64748b", position:"sticky", top:0 }}>{h}</th>
+                <th key={h} style={{ background:"rgba(0,0,0,0.3)", padding:"10px", textAlign:"left", color:"var(--text-muted)",
+                  borderBottom:"1px solid var(--border-default)", fontWeight:600, position:"sticky", top:0, textTransform:"uppercase", letterSpacing:1, fontSize:10 }}>{h}</th>
               ))}</tr>
             </thead>
             <tbody>
               {processed.map((r,i)=>(
-                <tr key={i} style={{ background:r._status==="valid"?"#f0fdf4":r._status==="error"?"#fef2f2":"#fffbeb" }}>
-                  <td style={{ padding:"6px 10px", fontWeight:600, color:r._status==="valid"?"#16a34a":r._status==="error"?"#dc2626":"#92400e" }}>
-                    {r._status==="valid"?"✓":r._status==="error"?("✗ "+r._errors.join(",")):"⚠ Dup"}
+                <tr key={i} style={{ background:r._status==="valid"?"rgba(16,185,129,0.06)":r._status==="error"?"rgba(239,68,68,0.06)":"rgba(245,158,11,0.06)", color:"var(--text-secondary)" }}>
+                  <td style={{ padding:"7px 10px", fontWeight:600, fontStyle:r._status==="error"?"italic":"normal",
+                    color:r._status==="valid"?"var(--success)":r._status==="error"?"#fca5a5":"#fcd34d" }}>
+                    {r._status==="valid"?"● Valid":r._status==="error"?("● "+r._errors.join(",")):"● Will overwrite"}
                   </td>
-                  <td style={{ padding:"6px 10px" }}>{r.Portal}</td>
-                  <td style={{ padding:"6px 10px" }}>{r.URL}</td>
-                  <td style={{ padding:"6px 10px" }}>{r.Username}</td>
-                  <td style={{ padding:"6px 10px" }}>{r.Category}</td>
-                  <td style={{ padding:"6px 10px" }}>{r.Teams}</td>
+                  <td style={{ padding:"7px 10px" }}>{r.Portal}</td>
+                  <td style={{ padding:"7px 10px" }}>{r.URL}</td>
+                  <td style={{ padding:"7px 10px" }}>{r.Username}</td>
+                  <td style={{ padding:"7px 10px" }}>{r.Category}</td>
+                  <td style={{ padding:"7px 10px" }}>{r.Teams}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-          <button onClick={()=>onConfirm(processed)} style={S.btn("primary")}>Import {valid} Valid Row(s)</button>
+          <button onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+          <button onClick={()=>onConfirm(processed)} className="erc-prim" style={S.btn("primary")}>Import {valid} Valid Row(s)</button>
         </div>
       </div>
     </div>
@@ -928,7 +1037,7 @@ function TwoFASetup({ user, onDone, toast }) {
 
   useEffect(() => {
     const s = new OTPAuth.Secret();
-    const t = new OTPAuth.TOTP({ issuer:"VaultAccess", label:user.username, algorithm:"SHA1", digits:6, period:30, secret:s });
+    const t = new OTPAuth.TOTP({ issuer:"Eagle RCM", label:user.username, algorithm:"SHA1", digits:6, period:30, secret:s });
     setSecret(s); setTotpObj(t);
     QRCode.toDataURL(t.toString()).then(url=>setQrUrl(url));
   }, [user.username]);
@@ -947,23 +1056,23 @@ function TwoFASetup({ user, onDone, toast }) {
     <div>
       {step===1 && (
         <>
-          <p style={{ fontSize:13, color:"#64748b", marginBottom:12 }}>Scan this QR code with Google Authenticator, Authy, or similar.</p>
-          {qrUrl && <img src={qrUrl} alt="QR" style={{ borderRadius:8, marginBottom:12, display:"block" }} />}
-          <div style={{ background:"#f8fafc", borderRadius:8, padding:"8px 12px", marginBottom:12 }}>
-            <div style={{ fontSize:11, color:"#94a3b8", marginBottom:4, fontWeight:600 }}>MANUAL KEY</div>
-            <code style={{ fontSize:12, wordBreak:"break-all" }}>{secret?.base32}</code>
+          <p style={{ fontSize:13, color:"var(--text-secondary)", marginBottom:12 }}>Scan with Authenticator (Google Authenticator, Authy…)</p>
+          {qrUrl && <div style={{ background:"#fff", borderRadius:12, padding:10, display:"inline-block", marginBottom:12 }}><img src={qrUrl} alt="QR" style={{ display:"block", width:160, height:160 }} /></div>}
+          <div style={{ ...fieldBox, marginBottom:12 }}>
+            <div style={{ ...microLabel, marginBottom:4 }}>Manual key</div>
+            <code style={{ fontSize:12, wordBreak:"break-all", fontFamily:"var(--font-mono)", color:"var(--text-primary)" }}>{secret?.base32}</code>
           </div>
-          <button onClick={()=>setStep(2)} style={S.btn("primary")}>Next →</button>
+          <button onClick={()=>setStep(2)} className="erc-prim" style={S.btn("primary")}>Next →</button>
         </>
       )}
       {step===2 && (
         <>
-          <p style={{ fontSize:13, color:"#64748b", marginBottom:12 }}>Enter the 6-digit code to verify setup.</p>
+          <p style={{ fontSize:13, color:"var(--text-secondary)", marginBottom:12 }}>Enter the 6-digit code to verify setup.</p>
           <input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))}
-            style={{ ...S.input(), textAlign:"center", fontSize:20, letterSpacing:6, marginBottom:12 }} placeholder="000000" maxLength={6} />
+            style={{ ...S.input(), textAlign:"center", fontSize:20, letterSpacing:6, marginBottom:12, fontFamily:"var(--font-mono)" }} placeholder="000000" maxLength={6} />
           <div style={{ display:"flex", gap:8 }}>
-            <button onClick={()=>setStep(1)} style={S.btn("ghost")}>Back</button>
-            <button onClick={handleVerify} style={S.btn("primary")}>Verify & Enable</button>
+            <button onClick={()=>setStep(1)} className="erc-ghost" style={S.btn("ghost")}>Back</button>
+            <button onClick={handleVerify} className="erc-prim" style={S.btn("primary")}>Verify & Enable</button>
           </div>
         </>
       )}
@@ -971,13 +1080,14 @@ function TwoFASetup({ user, onDone, toast }) {
   );
 }
 
-// ─── Profile Panel ────────────────────────────────────────────────────────────
+// ─── Profile Drawer ──────────────────────────────────────────────────────────
 function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copyHistory }) {
   const [section, setSection] = useState("main");
   const [cpForm, setCpForm] = useState({ current:"", newPw:"", confirm:"" });
   const [cpError, setCpError] = useState("");
   const [busy, setBusy] = useState(false);
   const [myRequests, setMyRequests] = useState([]);
+  const st = TEAM_STYLES[currentUser.team] || TEAM_STYLES.engineering;
 
   useEffect(() => {
     listRequests().then(rs => setMyRequests(rs.filter(r=>r.requesterId===session.userId))).catch(()=>{});
@@ -1007,29 +1117,33 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
     } catch (e) { toast(e.message,"error"); }
   };
 
+  const Divider = () => <div style={{ height:1, background:"var(--border-subtle)", margin:"4px 0 20px" }} />;
+  const heading = { fontWeight:700, color:"var(--text-primary)", marginBottom:12, fontSize:14 };
+
   return (
-    <div style={{ position:"fixed", right:0, top:0, bottom:0, width:380, background:"#fff",
-      boxShadow:"-8px 0 32px rgba(0,0,0,0.12)", zIndex:500, overflowY:"auto", display:"flex", flexDirection:"column" }}>
-      <div style={{ background:"linear-gradient(135deg,#0a0f1e,#1e293b)", padding:24, color:"#fff" }}>
+    <div style={{ position:"fixed", right:0, top:0, bottom:0, width:380, background:"var(--bg-elevated)",
+      borderLeft:"1px solid var(--border-default)", boxShadow:"-8px 0 40px rgba(0,0,0,0.5)", zIndex:500, overflowY:"auto",
+      display:"flex", flexDirection:"column", animation:"ercDrawerIn 0.25s ease-out" }}>
+      <div style={{ background:"linear-gradient(135deg,#0a0f1e,#1a2d4a)", padding:24, color:"#fff" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
           <span style={{ fontWeight:700, fontSize:16 }}>Profile</span>
-          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#94a3b8", fontSize:20, padding:0 }}>✕</button>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--text-secondary)", fontSize:20, padding:0 }}>✕</button>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-          <div style={{ width:52, height:52, borderRadius:"50%", background:"linear-gradient(135deg,#f59e0b,#d97706)",
-            display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:18, color:"#fff" }}>{currentUser.avatar}</div>
+          <div style={{ width:56, height:56, borderRadius:"50%", background:st.bg, color:st.color, border:"2px solid "+st.border,
+            display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:18 }}>{currentUser.avatar}</div>
           <div>
-            <div style={{ fontWeight:700, fontSize:16 }}>{currentUser.name}</div>
-            <div style={{ color:"#94a3b8", fontSize:13 }}>@{currentUser.username}</div>
+            <div style={{ fontWeight:700, fontSize:18 }}>{currentUser.name}</div>
+            <div style={{ color:"var(--text-secondary)", fontSize:13 }}>@{currentUser.username}</div>
             <div style={{ marginTop:4 }}><TeamBadge team={currentUser.team} small /></div>
           </div>
         </div>
-        <div style={{ marginTop:10, color:"#64748b", fontSize:12 }}>Last login: {fmtDate(currentUser.lastLoginAt)}</div>
+        <div style={{ marginTop:10, color:"var(--text-secondary)", fontSize:12 }}>Last login: {fmtDate(currentUser.lastLoginAt)}</div>
       </div>
 
       <div style={{ padding:20, flex:1 }}>
-        <div style={{ marginBottom:24 }}>
-          <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:12, fontSize:14 }}>Change Password</h4>
+        <div style={{ marginBottom:8 }}>
+          <h4 style={heading}>Change Password</h4>
           {[["Current Password","current"],["New Password","newPw"],["Confirm New","confirm"]].map(([lbl,key])=>(
             <div key={key} style={{ marginBottom:10 }}>
               <label style={S.label}>{lbl}</label>
@@ -1037,56 +1151,55 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
             </div>
           ))}
           {cpForm.newPw && <StrengthBar password={cpForm.newPw} />}
-          {cpError && <p style={{ color:"#dc2626", fontSize:13, marginTop:6 }}>{cpError}</p>}
-          <button onClick={handleChangePw} disabled={busy} style={{ ...S.btn("primary"), marginTop:10, opacity:busy?0.7:1 }}>Update Password</button>
+          {cpError && <p style={{ color:"#fca5a5", fontSize:13, marginTop:6 }}>{cpError}</p>}
+          <button onClick={handleChangePw} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), marginTop:10, width:"100%", justifyContent:"center", opacity:busy?0.7:1 }}>Update Password</button>
         </div>
+        <Divider />
 
-        {copyHistory.length>0 && (
-          <div style={{ marginBottom:24 }}>
-            <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:10, fontSize:14 }}>Recent Copies</h4>
-            {copyHistory.map((item,i)=>(
-              <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-                padding:"8px 12px", background:"#f8fafc", borderRadius:8, marginBottom:6, fontSize:13 }}>
-                <span><strong>{item.portal}</strong> · {item.field}</span>
-                <span style={{ color:"#94a3b8", fontSize:11 }}>{timeAgo(item.time)}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        <div style={{ marginBottom:8 }}>
+          <h4 style={{ ...heading, color:"var(--text-gold)" }}>📋 Session copy history</h4>
+          {copyHistory.length>0 ? copyHistory.map((item,i)=>(
+            <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px",
+              background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, marginBottom:6, fontSize:13 }}>
+              <span style={{ color:"var(--text-primary)" }}><strong>{item.portal}</strong> <span style={{ color:"var(--text-muted)" }}>· {item.field}</span></span>
+              <span style={{ color:"var(--text-muted)", fontSize:11 }}>{timeAgo(item.time)}</span>
+            </div>
+          )) : <p style={{ color:"var(--text-muted)", fontSize:13, fontStyle:"italic" }}>Nothing copied this session</p>}
+        </div>
+        <Divider />
 
-        <div style={{ marginBottom:24 }}>
-          <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:10, fontSize:14 }}>Two-Factor Authentication</h4>
+        <div style={{ marginBottom:8 }}>
+          <h4 style={heading}>Two-Factor Authentication</h4>
           {currentUser.twoFactorEnabled ? (
             <div>
-              <div style={{ color:"#16a34a", fontWeight:600, fontSize:13, marginBottom:10 }}>✓ Enabled</div>
+              <div style={{ color:"var(--success)", fontWeight:600, fontSize:13, marginBottom:10 }}>✓ Enabled</div>
               <button onClick={disable2FA} style={S.btn("danger")}>Disable 2FA</button>
             </div>
           ) : (
             <div>
-              <p style={{ color:"#64748b", fontSize:13, marginBottom:10 }}>2FA is not enabled.</p>
+              <p style={{ color:"var(--text-secondary)", fontSize:13, marginBottom:10 }}>2FA is not enabled.</p>
               {section==="2fa"
                 ? <TwoFASetup user={currentUser} toast={toast} onDone={u=>{ onUserUpdate(u); setSection("main"); }} />
-                : <button onClick={()=>setSection("2fa")} style={S.btn("primary")}>Setup 2FA</button>}
+                : <button onClick={()=>setSection("2fa")} className="erc-prim" style={S.btn("primary")}>Setup 2FA</button>}
             </div>
           )}
         </div>
 
-        {myRequests.length>0 && (
-          <div>
-            <h4 style={{ fontWeight:700, color:"#0f172a", marginBottom:10, fontSize:14 }}>My Access Requests</h4>
-            {myRequests.map(r=>(
-              <div key={r.id} style={{ padding:"10px 12px", background:"#f8fafc", borderRadius:8, marginBottom:8, fontSize:13 }}>
-                <div style={{ fontWeight:600 }}>{r.credentialName}</div>
+        {myRequests.length>0 && (<><Divider /><div>
+          <h4 style={heading}>My Access Requests</h4>
+          {myRequests.map(r=>{
+            const c = r.status==="pending"?"#f59e0b":r.status==="approved"?"#10b981":"#ef4444";
+            return (
+              <div key={r.id} style={{ padding:"10px 12px", background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, marginBottom:8, fontSize:13 }}>
+                <div style={{ fontWeight:600, color:"var(--text-primary)" }}>{r.credentialName}</div>
                 <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
-                  <span style={{ color:"#64748b" }}>{timeAgo(r.requestedAt)}</span>
-                  <span style={{ padding:"2px 8px", borderRadius:20, fontSize:11, fontWeight:600,
-                    background:r.status==="pending"?"#fef3c7":r.status==="approved"?"#dcfce7":"#fee2e2",
-                    color:r.status==="pending"?"#92400e":r.status==="approved"?"#166534":"#dc2626" }}>{r.status}</span>
+                  <span style={{ color:"var(--text-muted)" }}>{timeAgo(r.requestedAt)}</span>
+                  <span style={{ padding:"2px 8px", borderRadius:20, fontSize:11, fontWeight:600, background:c+"22", color:c, border:"1px solid "+c+"55" }}>{r.status}</span>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div></>)}
       </div>
     </div>
   );
@@ -1108,43 +1221,58 @@ function MatrixView({ creds, toast, onReload }) {
   };
 
   return (
-    <div style={{ overflowX:"auto" }}>
-      <table style={{ borderCollapse:"collapse", minWidth:600, fontSize:13 }}>
-        <thead>
-          <tr>
-            <th style={{ position:"sticky", left:0, background:"#fff", zIndex:2, padding:"10px 14px", textAlign:"left",
-              borderBottom:"2px solid #e5e9f0", borderRight:"1px solid #e5e9f0", minWidth:200, fontWeight:700, color:"#0f172a" }}>Credential</th>
-            {teams.map(t=>(
-              <th key={t} style={{ padding:"10px 14px", textAlign:"center", borderBottom:"2px solid #e5e9f0", minWidth:120, fontWeight:700 }}>
-                <TeamBadge team={t} />
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {categories.map(cat=>(
-            <React.Fragment key={cat}>
-              <tr>
-                <td colSpan={teams.length+1} style={{ background:"#f8fafc", padding:"6px 14px", fontWeight:700, color:"#64748b", fontSize:11, letterSpacing:1 }}>{cat.toUpperCase()}</td>
-              </tr>
-              {creds.filter(c=>c.category===cat).map(cred=>(
-                <tr key={cred.id} style={{ borderBottom:"1px solid #f1f5f9" }}>
-                  <td style={{ position:"sticky", left:0, background:"#fff", padding:"10px 14px", borderRight:"1px solid #e5e9f0", fontWeight:600 }}>{cred.portal}</td>
-                  {teams.map(t=>(
-                    <td key={t} style={{ padding:"10px 14px", textAlign:"center" }}>
-                      <button onClick={()=>toggleCell(cred,t)}
-                        style={{ background:hasTeam(cred,t)?"#dcfce7":"#f8fafc", border:"1px solid "+(hasTeam(cred,t)?"#bbf7d0":"#e5e9f0"),
-                          borderRadius:6, padding:"4px 14px", cursor:"pointer", color:hasTeam(cred,t)?"#166534":"#94a3b8", fontWeight:700 }}>
-                        {hasTeam(cred,t)?"✓":"–"}
-                      </button>
-                    </td>
-                  ))}
-                </tr>
+    <div style={{ ...glass, padding:0, overflow:"hidden" }}>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ borderCollapse:"collapse", minWidth:600, fontSize:13, width:"100%" }}>
+          <thead>
+            <tr>
+              <th style={{ position:"sticky", left:0, background:"var(--bg-surface)", zIndex:2, padding:"12px 14px", textAlign:"left",
+                borderBottom:"1px solid var(--border-default)", borderRight:"1px solid var(--border-subtle)", minWidth:200, fontWeight:700, color:"var(--text-primary)" }}>Credential</th>
+              {teams.map(t=>(
+                <th key={t} style={{ padding:"12px 14px", textAlign:"center", borderBottom:"1px solid var(--border-default)", minWidth:120, background:"rgba(0,0,0,0.3)" }}>
+                  <TeamBadge team={t} />
+                </th>
               ))}
-            </React.Fragment>
-          ))}
-        </tbody>
-      </table>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map(cat=>(
+              <React.Fragment key={cat}>
+                <tr>
+                  <td colSpan={teams.length+1} style={{ background:"rgba(0,0,0,0.25)", padding:"6px 14px", fontWeight:700, color:"var(--text-muted)", fontSize:10, letterSpacing:1.5, textTransform:"uppercase" }}>{cat}</td>
+                </tr>
+                {creds.filter(c=>c.category===cat).map((cred,i)=>(
+                  <tr key={cred.id} className="erc-row" style={{ borderBottom:"1px solid var(--border-subtle)", background:i%2?"rgba(255,255,255,0.02)":"transparent" }}>
+                    <td style={{ position:"sticky", left:0, background:"var(--bg-surface)", padding:"10px 14px", borderRight:"1px solid var(--border-subtle)", fontWeight:600, color:"var(--text-primary)" }}>{cred.portal}</td>
+                    {teams.map(t=>(
+                      <td key={t} style={{ padding:"10px 14px", textAlign:"center" }}>
+                        <button onClick={()=>toggleCell(cred,t)}
+                          style={{ background:hasTeam(cred,t)?"var(--gold-dim)":"rgba(255,255,255,0.03)", border:"1px solid "+(hasTeam(cred,t)?"rgba(245,184,0,0.4)":"var(--border-subtle)"),
+                            borderRadius:6, padding:"4px 14px", cursor:"pointer", color:hasTeam(cred,t)?"var(--gold-bright)":"var(--text-muted)", fontWeight:700 }}>
+                          {hasTeam(cred,t)?"✓":"–"}
+                        </button>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Empty state ─────────────────────────────────────────────────────────────
+function EmptyState({ icon, title, sub, action }) {
+  return (
+    <div style={{ ...glass, padding:"48px 24px", textAlign:"center" }}>
+      <div style={{ width:72, height:72, borderRadius:"50%", background:"var(--gold-dim)", display:"flex", alignItems:"center",
+        justifyContent:"center", fontSize:34, margin:"0 auto 16px" }}>{icon}</div>
+      <div style={{ fontSize:16, fontWeight:600, color:"var(--text-primary)", marginBottom:6 }}>{title}</div>
+      <div style={{ fontSize:13, color:"var(--text-secondary)", marginBottom:action?18:0 }}>{sub}</div>
+      {action}
     </div>
   );
 }
@@ -1152,13 +1280,34 @@ function MatrixView({ creds, toast, onReload }) {
 // ─── Loading splash ───────────────────────────────────────────────────────────
 function Splash({ text }) {
   return (
-    <div style={{ minHeight:"100vh", background:"#060d1a", display:"flex", flexDirection:"column",
-      alignItems:"center", justifyContent:"center", color:"#94a3b8", gap:12 }}>
-      <div style={{ fontSize:40 }}>🔐</div>
+    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:"var(--text-secondary)", gap:14 }}>
+      <div style={{ width:60, height:60, borderRadius:16, fontSize:32, background:"linear-gradient(135deg,#f5b800,#d4960a)",
+        display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 8px 32px rgba(245,184,0,0.4)" }}>🦅</div>
       <div style={{ fontSize:14 }}>{text||"Loading…"}</div>
     </div>
   );
 }
+
+// ─── Stat Card ───────────────────────────────────────────────────────────────
+function StatCard({ icon, val, label, descriptor, accent }) {
+  const num = useCountUp(typeof val === "number" ? val : 0);
+  const display = typeof val === "number" ? num : val;
+  return (
+    <div style={{ ...glass, padding:20, flex:1, minWidth:150, position:"relative", overflow:"hidden" }}>
+      <div style={{ position:"absolute", left:0, top:12, bottom:12, width:3, borderRadius:3, background:accent }} />
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, paddingLeft:8 }}>
+        <span style={{ fontSize:20 }}>{icon}</span>
+        <span style={microLabel}>{label}</span>
+      </div>
+      <div style={{ fontSize:36, fontWeight:800, color:"var(--text-primary)", lineHeight:1, paddingLeft:8 }}>{display}</div>
+      <div style={{ fontSize:12, color:"var(--text-muted)", marginTop:6, paddingLeft:8 }}>{descriptor}</div>
+    </div>
+  );
+}
+
+// ─── Glass toolbar wrapper ───────────────────────────────────────────────────
+const toolbar = { background:"rgba(8,15,30,0.8)", border:"1px solid var(--border-subtle)", borderRadius:14, padding:"12px 16px",
+  display:"flex", gap:10, flexWrap:"wrap", alignItems:"center", marginBottom:16 };
 
 // ─── Credentials Tab ──────────────────────────────────────────────────────────
 function CredentialsTab({ session, toast }) {
@@ -1177,6 +1326,7 @@ function CredentialsTab({ session, toast }) {
   const [favs, setFavs] = useState([]);
   const [requests, setRequests] = useState([]);
   const [recentViewed, setRecentViewed] = useState([]);
+  const [warnDismissed, setWarnDismissed] = useState(false);
 
   const isAdmin = session.team==="admin";
 
@@ -1313,7 +1463,7 @@ function CredentialsTab({ session, toast }) {
     const ws2=XLSX.utils.aoa_to_sheet([mh,...mr]);
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws1,"Credentials"); XLSX.utils.book_append_sheet(wb,ws2,"Access Matrix");
-    XLSX.writeFile(wb,"VaultAccess-Export.xlsx"); toast("Exported!","success");
+    XLSX.writeFile(wb,"EagleRCM-Export.xlsx"); toast("Exported!","success");
   };
 
   const handleTemplate = () => {
@@ -1325,7 +1475,7 @@ function CredentialsTab({ session, toast }) {
     ];
     const ws=XLSX.utils.aoa_to_sheet([h,...ex]); ws["!cols"]=h.map(()=>({wch:22}));
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Template");
-    XLSX.writeFile(wb,"VaultAccess-Template.xlsx"); toast("Template downloaded!","success");
+    XLSX.writeFile(wb,"EagleRCM-Template.xlsx"); toast("Template downloaded!","success");
   };
 
   const stats = {
@@ -1336,44 +1486,46 @@ function CredentialsTab({ session, toast }) {
     team: accessible.filter(c=>c.teams!=="all"&&Array.isArray(c.teams)&&c.teams.includes(session.team)).length,
     total: creds.length,
   };
-  const StatCard = ({ val, label, color }) => (
-    <div style={{ background:color+"10", border:"1px solid "+color+"25", borderRadius:12, padding:"14px 18px", flex:1, minWidth:100 }}>
-      <div style={{ fontSize:22, fontWeight:800, color }}>{val}</div>
-      <div style={{ fontSize:12, color:"#64748b", marginTop:2 }}>{label}</div>
-    </div>
-  );
+
+  const catPill = (active) => ({ padding:"6px 14px", fontSize:13, borderRadius:20, cursor:"pointer", fontWeight: active?600:500,
+    border:"1px solid "+(active?"var(--gold-bright)":"var(--border-default)"), background:active?"var(--gold-dim)":"transparent",
+    color:active?"var(--gold-bright)":"var(--text-secondary)", transition:"all .15s ease" });
 
   if (loading) return <Splash text="Loading credentials…" />;
 
   return (
-    <div>
-      {(rotationWarning.length>0 || expiredCount>0) && (
-        <div style={{ background:"#fffbeb", border:"1px solid #fde68a", borderRadius:10, padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:18 }}>⚠️</span>
-          <span style={{ color:"#92400e", fontWeight:600, fontSize:14 }}>
+    <div className="erc-page">
+      {(rotationWarning.length>0 || expiredCount>0) && !warnDismissed && (
+        <div style={{ background:"linear-gradient(90deg, rgba(245,158,11,0.12) 0%, rgba(245,158,11,0.06) 100%)",
+          borderLeft:"3px solid var(--warning)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:12, padding:"14px 18px",
+          marginBottom:20, display:"flex", alignItems:"center", gap:12 }}>
+          <span style={{ width:32, height:32, borderRadius:"50%", background:"rgba(245,158,11,0.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>⚠️</span>
+          <span style={{ color:"#fcd34d", fontWeight:600, fontSize:14, flex:1 }}>
             {rotationWarning.length>0 && `${rotationWarning.length} credential(s) need rotation or expiring within 7 days.`}
             {rotationWarning.length>0 && expiredCount>0 && " "}
             {expiredCount>0 && `${expiredCount} time-restricted credential(s) have expired.`}
           </span>
+          <button onClick={()=>setWarnDismissed(true)} style={{ background:"none", border:"none", color:"var(--text-muted)", cursor:"pointer", fontSize:16 }}>✕</button>
         </div>
       )}
 
-      <div style={{ display:"flex", gap:12, marginBottom:20, flexWrap:"wrap" }}>
-        <StatCard val={stats.accessible} label="Accessible" color="#2563eb" />
-        <StatCard val={stats.categories} label="Categories" color="#16a34a" />
-        <StatCard val={stats.clientsCount} label="Clients" color="#3b52a0" />
-        <StatCard val={stats.restricted} label="Restricted" color="#ef4444" />
-        <StatCard val={stats.team} label={"Team ("+session.team+")"} color="#9333ea" />
-        {isAdmin && <StatCard val={stats.total} label="Total" color="#f59e0b" />}
+      <div style={{ display:"flex", gap:14, marginBottom:24, flexWrap:"wrap" }}>
+        <StatCard icon="🔑" val={stats.accessible} label="Accessible" descriptor="credentials you can use" accent="var(--gold-bright)" />
+        <StatCard icon="📂" val={stats.categories} label="Categories" descriptor="distinct types" accent="var(--info)" />
+        <StatCard icon="🏢" val={stats.clientsCount} label="Clients" descriptor="organisations" accent="#a78bfa" />
+        <StatCard icon="⏰" val={stats.restricted} label="Restricted" descriptor="time-limited now" accent="var(--danger)" />
+        <StatCard icon="👥" val={stats.team} label={"Team · "+session.team} descriptor="team-scoped" accent={(TEAM_STYLES[session.team]||TEAM_STYLES.engineering).color} />
+        {isAdmin && <StatCard icon="📊" val={stats.total} label="Total" descriptor="across the vault" accent="var(--success)" />}
       </div>
 
       {recentViewed.length>0 && (
         <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:"#64748b", marginBottom:8 }}>Recently Viewed</div>
+          <div style={{ ...microLabel, color:"var(--text-gold)", marginBottom:8 }}>🕘 Recently viewed</div>
           <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:4 }}>
             {recentViewed.map(c=>(
-              <div key={c.id} style={{ background:"#fff", border:"1px solid #e5e9f0", borderRadius:10, padding:"8px 14px", whiteSpace:"nowrap", fontSize:13, fontWeight:600, color:"#0f172a", flexShrink:0 }}>
-                {CAT_ICONS[c.category]||"🔑"} {c.portal}
+              <div key={c.id} className="erc-card" style={{ ...glass, height:44, display:"flex", alignItems:"center", gap:8, padding:"0 14px",
+                whiteSpace:"nowrap", fontSize:13, fontWeight:600, color:"var(--text-primary)", flexShrink:0 }}>
+                {CAT_ICONS[c.category]||"🔑"} {c.portal} <span style={{ color:"var(--text-muted)", fontWeight:400 }}>· {timeAgo(c.updatedAt)}</span>
               </div>
             ))}
           </div>
@@ -1381,11 +1533,13 @@ function CredentialsTab({ session, toast }) {
       )}
 
       {pinned.length>0 && (
-        <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:"#64748b", marginBottom:10 }}>⭐ Pinned</div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:16 }}>
-            {pinned.map(c=>(
-              <CredentialCard key={c.id} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
+        <div style={{ marginBottom:20, borderTop:"1px solid rgba(245,184,0,0.15)", paddingTop:16 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"var(--gold-bright)", marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
+            ⭐ Pinned <span style={{ background:"var(--gold-dim)", color:"var(--gold-bright)", borderRadius:20, padding:"1px 8px", fontSize:11 }}>{pinned.length}</span>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
+            {pinned.map((c,i)=>(
+              <CredentialCard key={c.id} index={i} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
                 onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={true} requests={requests}
                 onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
             ))}
@@ -1393,60 +1547,52 @@ function CredentialsTab({ session, toast }) {
         </div>
       )}
 
-      <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
-        <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), maxWidth:280 }} placeholder="🔍 Search credentials..." />
+      <div style={toolbar}>
+        <div style={{ position:"relative", flex:1, minWidth:240, maxWidth:340 }}>
+          <span style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", color:"var(--text-muted)", fontSize:14 }}>🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), padding:"10px 36px" }} placeholder="Search credentials..." />
+          {search && <button onClick={()=>setSearch("")} style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", color:"var(--text-muted)", cursor:"pointer", fontSize:14 }}>✕</button>}
+        </div>
         <select value={sort} onChange={e=>setSort(e.target.value)} style={{ ...S.input(), width:"auto" }}>
           {["A-Z","Newest","Oldest","Expiring Soon"].map(s=><option key={s}>{s}</option>)}
         </select>
-        <button onClick={()=>setRestrictedOnly(v=>!v)}
-          style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600,
-            border:"1px solid "+(restrictedOnly?"#ef4444":"#e5e9f0"),
-            background:restrictedOnly?"#fef2f2":"#fff", color:restrictedOnly?"#b91c1c":"#64748b" }}>
-          ⏰ Time-Restricted
-        </button>
+        <button onClick={()=>setRestrictedOnly(v=>!v)} style={catPill(restrictedOnly)}>⏰ Time-Restricted</button>
+        {isAdmin && (
+          <div style={{ display:"flex", gap:8, marginLeft:"auto", flexWrap:"wrap" }}>
+            <label className="erc-ghost" style={{ ...S.btn("ghost"), cursor:"pointer" }}>
+              📥 Import<input type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFileImport} />
+            </label>
+            <button onClick={handleExport} className="erc-ghost" style={S.btn("ghost")}>📤 Export</button>
+            <button onClick={handleTemplate} className="erc-ghost" style={S.btn("ghost")}>📋 Template</button>
+            <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>
+          </div>
+        )}
       </div>
 
       <div style={{ display:"flex", gap:8, marginBottom:10, flexWrap:"wrap", alignItems:"center" }}>
-        <span style={{ fontSize:12, fontWeight:600, color:"#94a3b8", whiteSpace:"nowrap" }}>CATEGORY</span>
-        {categories.map(c=>(
-          <button key={c} onClick={()=>setCatFilter(c)} style={{ ...S.btn(catFilter===c?"primary":"ghost"), padding:"6px 14px", fontSize:13 }}>{c}</button>
-        ))}
+        <span style={microLabel}>Category</span>
+        {categories.map(c=>(<button key={c} className="erc-pill" onClick={()=>setCatFilter(c)} style={catPill(catFilter===c)}>{c}</button>))}
       </div>
 
       {clients.length>1 && (
-        <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
-          <span style={{ fontSize:12, fontWeight:600, color:"#94a3b8", whiteSpace:"nowrap" }}>CLIENT</span>
-          {clients.map(cl=>(
-            <button key={cl} onClick={()=>setClientFilter(cl)}
-              style={{ padding:"6px 14px", fontSize:13, borderRadius:8, border:"none", cursor:"pointer", fontWeight:600,
-                background: clientFilter===cl ? "#3b52a0" : "#f0f4ff", color: clientFilter===cl ? "#fff" : "#3b52a0" }}>
-              {cl==="All" ? "All Clients" : "🏢 "+cl}
-            </button>
-          ))}
+        <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap", alignItems:"center" }}>
+          <span style={microLabel}>Client</span>
+          {clients.map(cl=>(<button key={cl} className="erc-pill" onClick={()=>setClientFilter(cl)} style={catPill(clientFilter===cl)}>{cl==="All"?"All Clients":"🏢 "+cl}</button>))}
         </div>
       )}
 
-      {isAdmin && (
-        <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
-          <label style={{ ...S.btn("ghost"), cursor:"pointer" }}>
-            📥 Import Excel
-            <input type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFileImport} />
-          </label>
-          <button onClick={handleExport} style={S.btn("ghost")}>📤 Export Excel</button>
-          <button onClick={handleTemplate} style={S.btn("ghost")}>📋 Download Template</button>
-          <button onClick={()=>setShowAdd(true)} style={S.btn("primary")}>+ Add Credential</button>
-        </div>
-      )}
-
-      <div style={{ fontSize:13, color:"#64748b", marginBottom:12 }}>{filtered.length} credential(s) found</div>
+      <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14 }}>{filtered.length} credential(s) found</div>
 
       {filtered.length===0 ? (
-        <div style={{ textAlign:"center", padding:40, color:"#94a3b8" }}>No credentials found.</div>
+        search||catFilter!=="All"||clientFilter!=="All"||restrictedOnly
+          ? <EmptyState icon="🔍" title="Nothing matched" sub="Try different search terms or clear filters" />
+          : <EmptyState icon="🔑" title="No credentials yet" sub="Add your first credential to get started"
+              action={isAdmin && <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>} />
       ) : (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))", gap:16 }}>
-          {unpinned.map(c=>(
-            <CredentialCard key={c.id} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
-              onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={false} requests={requests}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
+          {unpinned.map((c,i)=>(
+            <CredentialCard key={c.id} index={i} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
+              onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={false} requests={requests}
               onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
           ))}
         </div>
@@ -1457,13 +1603,13 @@ function CredentialsTab({ session, toast }) {
       )}
       {deleteCredState && (
         <div style={S.overlay}>
-          <div style={{ background:"#fff", borderRadius:16, padding:28, maxWidth:380, textAlign:"center" }}>
-            <div style={{ fontSize:32, marginBottom:12 }}>🗑️</div>
-            <h3 style={{ fontWeight:700, marginBottom:8 }}>Delete "{deleteCredState.portal}"?</h3>
-            <p style={{ color:"#64748b", fontSize:14, marginBottom:20 }}>This cannot be undone.</p>
+          <div style={{ ...glass, padding:28, maxWidth:380, textAlign:"center" }}>
+            <div style={{ width:56, height:56, borderRadius:"50%", background:"var(--danger-bg)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, margin:"0 auto 14px" }}>🗑️</div>
+            <h3 style={{ fontWeight:700, marginBottom:8, color:"var(--text-primary)", fontSize:18 }}>Delete "{deleteCredState.portal}"?</h3>
+            <p style={{ color:"var(--text-secondary)", fontSize:14, marginBottom:20 }}>This permanently removes the credential and cannot be undone.</p>
             <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-              <button onClick={()=>setDeleteCredState(null)} style={S.btn("ghost")}>Cancel</button>
-              <button onClick={()=>handleDelete(deleteCredState)} style={S.btn("danger")}>Delete</button>
+              <button onClick={()=>setDeleteCredState(null)} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+              <button onClick={()=>handleDelete(deleteCredState)} className="erc-prim" style={{ ...S.btn("primary"), background:"#dc2626", color:"#fff", boxShadow:"0 4px 16px rgba(239,68,68,0.3)" }}>Delete</button>
             </div>
           </div>
         </div>
@@ -1532,17 +1678,19 @@ function UsersTab({ session, toast }) {
     catch (e) { toast(e.message,"error"); }
   };
 
+  const teamPill = (active) => ({ ...S.btn(active?"primary":"ghost"), padding:"6px 14px", fontSize:13 });
+
   if (loading) return <Splash text="Loading users…" />;
 
   return (
-    <div>
+    <div className="erc-page">
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:10 }}>
-        <div style={{ fontWeight:700, color:"#0f172a", fontSize:18 }}>
-          Users <span style={{ color:"#94a3b8", fontSize:14, fontWeight:400 }}>({users.length})</span>
+        <div style={{ fontWeight:700, color:"var(--text-primary)", fontSize:20 }}>
+          Users <span style={{ color:"var(--text-muted)", fontSize:14, fontWeight:400 }}>({users.length})</span>
         </div>
         <div style={{ display:"flex", gap:8 }}>
-          <button onClick={()=>setMatrixView(p=>!p)} style={S.btn(matrixView?"primary":"ghost")}>{matrixView?"List View":"Matrix View"}</button>
-          <button onClick={()=>setShowAdd(true)} style={S.btn("primary")}>+ Add User</button>
+          <button onClick={()=>setMatrixView(p=>!p)} className={matrixView?"erc-prim":"erc-ghost"} style={S.btn(matrixView?"primary":"ghost")}>{matrixView?"List View":"Matrix View"}</button>
+          <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add User</button>
         </div>
       </div>
 
@@ -1550,44 +1698,48 @@ function UsersTab({ session, toast }) {
         <MatrixView creds={creds} toast={toast} onReload={loadAll} />
       ) : (
         <>
-          <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-            <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), maxWidth:260 }} placeholder="🔍 Search users..." />
+          <div style={toolbar}>
+            <div style={{ position:"relative", flex:1, minWidth:220, maxWidth:300 }}>
+              <span style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", color:"var(--text-muted)" }}>🔍</span>
+              <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), padding:"10px 36px" }} placeholder="Search users..." />
+            </div>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              {["All",...TEAMS].map(t=>(<button key={t} onClick={()=>setTeamFilter(t)} style={teamPill(teamFilter===t)}>{t}</button>))}
+            </div>
           </div>
-          <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
-            {["All",...TEAMS].map(t=>(
-              <button key={t} onClick={()=>setTeamFilter(t)} style={{ ...S.btn(teamFilter===t?"primary":"ghost"), padding:"6px 14px", fontSize:13 }}>{t}</button>
-            ))}
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:16 }}>
-            {filtered.map(u=>{
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))", gap:16 }}>
+            {filtered.map((u,i)=>{
               const accessCount=creds.filter(c=>canAccess(c,u.team)).length;
+              const st=TEAM_STYLES[u.team]||TEAM_STYLES.engineering;
+              const status = u.lockedUntil && new Date(u.lockedUntil)>new Date() ? { t:"Locked", c:"#ef4444" }
+                : u.lastLoginAt ? { t:"Active", c:"#10b981" } : { t:"No recent login", c:"#f59e0b" };
               return (
-                <div key={u.id} style={S.card()}>
+                <div key={u.id} className="erc-card" style={{ ...S.card(), animation:"ercCardIn 0.3s ease-out both", animationDelay:`${i*40}ms` }}>
                   <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
-                    <div style={{ width:44, height:44, borderRadius:"50%", background:"linear-gradient(135deg,#f59e0b,#d97706)",
-                      display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:15, color:"#fff", flexShrink:0 }}>{u.avatar}</div>
+                    <div style={{ width:52, height:52, borderRadius:"50%", background:st.bg, color:st.color, border:"2px solid "+st.border,
+                      display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:17, flexShrink:0 }}>{u.avatar}</div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-                        <span style={{ fontWeight:700, color:"#0f172a", fontSize:15 }}>{u.name}</span>
-                        {u.id===session.userId && <span style={{ background:"#dbeafe", color:"#1e40af", borderRadius:20, padding:"1px 6px", fontSize:10, fontWeight:700 }}>You</span>}
+                        <span style={{ fontWeight:700, color:"var(--text-primary)", fontSize:16 }}>{u.name}</span>
+                        {u.id===session.userId && <span style={{ background:"var(--gold-dim)", color:"var(--gold-bright)", borderRadius:20, padding:"1px 7px", fontSize:10, fontWeight:700 }}>You</span>}
                       </div>
-                      <div style={{ color:"#64748b", fontSize:13, fontFamily:"monospace" }}>@{u.username}</div>
+                      <div style={{ marginTop:4 }}><TeamBadge team={u.team} small /></div>
                     </div>
                   </div>
-                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
-                    <TeamBadge team={u.team} small />
-                    {u.twoFactorEnabled && <span style={{ background:"#dcfce7", color:"#166534", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>2FA ✓</span>}
+                  <div style={{ height:1, background:"var(--border-subtle)", marginBottom:12 }} />
+                  <div style={{ fontSize:12, color:"var(--text-secondary)", marginBottom:12, display:"flex", flexDirection:"column", gap:5 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between" }}><span>Last login</span><span style={{ color:"var(--text-primary)" }}>{u.lastLoginAt?timeAgo(u.lastLoginAt):"Never"}</span></div>
+                    <div style={{ display:"flex", justifyContent:"space-between" }}><span>Credential access</span><span style={{ color:"var(--text-primary)" }}>{accessCount}</span></div>
+                    <div style={{ display:"flex", justifyContent:"space-between" }}><span>Two-factor</span><span style={{ color:u.twoFactorEnabled?"var(--success)":"var(--text-muted)" }}>{u.twoFactorEnabled?"Enabled ✓":"Off"}</span></div>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}><span>Status</span>
+                      <span style={{ background:status.c+"22", color:status.c, border:"1px solid "+status.c+"55", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>{status.t}</span></div>
                   </div>
-                  <div style={{ fontSize:12, color:"#64748b", marginBottom:10 }}>
-                    <div>Access: {accessCount} credentials</div>
-                    <div>Last login: {u.lastLoginAt?timeAgo(u.lastLoginAt):"Never"}</div>
-                  </div>
-                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", paddingTop:10, borderTop:"1px solid #f1f5f9" }}>
-                    <button onClick={()=>setEditUser(u)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>Edit</button>
-                    <button onClick={()=>setResetUser(u)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>Reset PW</button>
-                    <button onClick={()=>handleToggle2FA(u)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:12 }}>{u.twoFactorEnabled?"Disable 2FA":"Enable 2FA"}</button>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", paddingTop:10, borderTop:"1px solid var(--border-subtle)" }}>
+                    <button onClick={()=>setEditUser(u)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>Edit</button>
+                    <button onClick={()=>setResetUser(u)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>Reset PW</button>
+                    <button onClick={()=>handleToggle2FA(u)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>{u.twoFactorEnabled?"Disable 2FA":"Enable 2FA"}</button>
                     <button onClick={()=>handleRemove(u)} disabled={u.id===session.userId||(u.team==="admin"&&adminCount<=1)}
-                      style={{ ...S.btn("danger"), padding:"4px 10px", fontSize:12,
+                      style={{ ...S.btn("danger"), padding:"5px 10px", fontSize:12,
                         opacity:(u.id===session.userId||(u.team==="admin"&&adminCount<=1))?0.4:1,
                         cursor:(u.id===session.userId||(u.team==="admin"&&adminCount<=1))?"not-allowed":"pointer" }}>Remove</button>
                   </div>
@@ -1621,10 +1773,10 @@ function AuditTab({ session, toast }) {
   useEffect(() => { listAudit().then(setAudit).catch(e=>toast(e.message,"error")).finally(()=>setLoading(false)); }, [toast]);
 
   const actionColors = {
-    add:"#16a34a", approve:"#16a34a", add_user:"#16a34a", bulk_import:"#16a34a",
-    login:"#2563eb", view:"#2563eb", copy:"#2563eb", logout:"#2563eb",
+    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981",
+    login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa",
     edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b",
-    delete:"#dc2626", deny:"#dc2626", login_failed:"#dc2626", remove_user:"#dc2626",
+    delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444",
   };
   const dateMs = { Today:86400000, "7d":7*86400000, "30d":30*86400000, All:Infinity };
   const now = Date.now();
@@ -1642,54 +1794,58 @@ function AuditTab({ session, toast }) {
     const h=["Timestamp","User","Action","Credential","Target","Detail"];
     const rows=filtered.map(e=>[new Date(e.timestamp).toLocaleString(),e.userName,e.action,e.credentialName||"",e.targetUserId||"",e.detail||e.ipNote||""]);
     const ws=XLSX.utils.aoa_to_sheet([h,...rows]); const wb=XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb,ws,"Audit Log"); XLSX.writeFile(wb,"VaultAccess-Audit.xlsx"); toast("Exported!","success");
+    XLSX.utils.book_append_sheet(wb,ws,"Audit Log"); XLSX.writeFile(wb,"EagleRCM-Audit.xlsx"); toast("Exported!","success");
   };
 
+  const th = { padding:"12px 14px", textAlign:"left", borderBottom:"1px solid var(--border-default)", fontWeight:600, color:"var(--text-muted)", fontSize:10, textTransform:"uppercase", letterSpacing:1.5 };
   if (loading) return <Splash text="Loading audit log…" />;
 
   return (
-    <div>
+    <div className="erc-page">
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:10 }}>
-        <h2 style={{ fontWeight:700, color:"#0f172a", fontSize:18 }}>Audit Log</h2>
-        <button onClick={handleExport} style={S.btn("primary")}>📤 Export Audit Log</button>
+        <h2 style={{ fontWeight:700, color:"var(--text-primary)", fontSize:20 }}>Audit Log</h2>
+        <button onClick={handleExport} className="erc-prim" style={S.btn("primary")}>📤 Export Audit Log</button>
       </div>
-      <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap" }}>
+      <div style={toolbar}>
         <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), maxWidth:220 }} placeholder="Search..." />
         <select value={actionFilter} onChange={e=>setActionFilter(e.target.value)} style={{ ...S.input(), width:"auto" }}>
           {["All","login","copy","edit","delete","add","request","import"].map(a=>(<option key={a}>{a}</option>))}
         </select>
         <select value={userFilter} onChange={e=>setUserFilter(e.target.value)} style={{ ...S.input(), width:"auto" }}>
-          <option>All</option>
-          {uniqueUsers.map(u=><option key={u}>{u}</option>)}
+          <option>All</option>{uniqueUsers.map(u=><option key={u}>{u}</option>)}
         </select>
         <select value={dateRange} onChange={e=>setDateRange(e.target.value)} style={{ ...S.input(), width:"auto" }}>
           {["Today","7d","30d","All"].map(d=><option key={d}>{d}</option>)}
         </select>
       </div>
-      <div style={{ background:"#fff", borderRadius:12, border:"1px solid #e5e9f0", overflow:"hidden" }}>
+      <div style={{ background:"var(--bg-surface)", borderRadius:14, border:"1px solid var(--border-subtle)", overflow:"hidden" }}>
         <div style={{ overflowX:"auto" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
             <thead>
-              <tr style={{ background:"#f8fafc" }}>
-                {["Timestamp","User","Action","Credential/Target","Detail"].map(h=>(
-                  <th key={h} style={{ padding:"12px 14px", textAlign:"left", borderBottom:"1px solid #e5e9f0", fontWeight:600, color:"#64748b", fontSize:12 }}>{h}</th>
-                ))}
+              <tr style={{ background:"rgba(0,0,0,0.3)" }}>
+                {["Timestamp","User","Action","Credential/Target","Detail"].map(h=>(<th key={h} style={th}>{h}</th>))}
               </tr>
             </thead>
             <tbody>
               {filtered.length===0
-                ? <tr><td colSpan={5} style={{ textAlign:"center", padding:30, color:"#94a3b8" }}>No entries</td></tr>
-                : filtered.map(e=>(
-                  <tr key={e.id} style={{ borderBottom:"1px solid #f1f5f9" }}>
-                    <td style={{ padding:"10px 14px", color:"#64748b", whiteSpace:"nowrap", fontSize:12 }}>{new Date(e.timestamp).toLocaleString()}</td>
-                    <td style={{ padding:"10px 14px", fontWeight:600 }}>{e.userName}</td>
-                    <td style={{ padding:"10px 14px" }}>
-                      <span style={{ background:(actionColors[e.action]||"#64748b")+"20", color:actionColors[e.action]||"#64748b", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>{e.action}</span>
-                    </td>
-                    <td style={{ padding:"10px 14px", color:"#0f172a" }}>{e.credentialName||e.targetUserId||"—"}</td>
-                    <td style={{ padding:"10px 14px", color:"#64748b", fontSize:12 }}>{e.detail||e.ipNote}</td>
-                  </tr>
-                ))}
+                ? <tr><td colSpan={5}><EmptyState icon="📋" title="No activity yet" sub="Actions will appear here as the team uses Eagle RCM" /></td></tr>
+                : filtered.map((e,i)=>{ const c=actionColors[e.action]||"#8899b4";
+                  return (
+                    <tr key={e.id} style={{ borderBottom:"1px solid var(--border-subtle)", height:48, background:i%2?"rgba(255,255,255,0.015)":"transparent" }}>
+                      <td style={{ padding:"10px 14px", color:"var(--text-muted)", whiteSpace:"nowrap", fontSize:12, fontFamily:"var(--font-mono)" }}>{new Date(e.timestamp).toLocaleString()}</td>
+                      <td style={{ padding:"10px 14px" }}>
+                        <span style={{ display:"inline-flex", alignItems:"center", gap:8 }}>
+                          <span style={{ width:24, height:24, borderRadius:"50%", background:"var(--bg-highlight)", color:"var(--text-secondary)", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:10, fontWeight:700 }}>{getInitials(e.userName)}</span>
+                          <span style={{ color:"var(--text-primary)", fontWeight:600 }}>{e.userName}</span>
+                        </span>
+                      </td>
+                      <td style={{ padding:"10px 14px" }}>
+                        <span style={{ background:c+"22", color:c, border:"1px solid "+c+"44", borderRadius:20, padding:"3px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase", letterSpacing:0.5 }}>{e.action}</span>
+                      </td>
+                      <td style={{ padding:"10px 14px", color:"var(--text-muted)", fontSize:12, fontStyle:"italic" }}>{e.credentialName||e.targetUserId||"—"}</td>
+                      <td style={{ padding:"10px 14px", color:"var(--text-secondary)", fontSize:13, maxWidth:280, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{e.detail||e.ipNote}</td>
+                    </tr>
+                  ); })}
             </tbody>
           </table>
         </div>
@@ -1721,48 +1877,51 @@ function AccessRequestsTab({ session, toast, onChange }) {
 
   const pendingCount = requests.filter(r=>r.status==="pending").length;
   const filtered = requests.filter(r=>r.status===subTab);
+  const accent = { pending:"var(--gold-bright)", approved:"var(--success)", denied:"var(--danger)" };
 
   if (loading) return <Splash text="Loading requests…" />;
 
   return (
-    <div>
-      <h2 style={{ fontWeight:700, color:"#0f172a", fontSize:18, marginBottom:16 }}>Access Requests</h2>
-      <div style={{ display:"flex", gap:4, marginBottom:20, borderBottom:"2px solid #e5e9f0" }}>
-        {["pending","approved","denied"].map(t=>(
-          <button key={t} onClick={()=>setSubTab(t)}
-            style={{ background:"none", border:"none", borderBottom:"2px solid "+(subTab===t?"#f59e0b":"transparent"),
-              color:subTab===t?"#f59e0b":"#64748b", fontWeight:subTab===t?700:400, padding:"8px 16px", fontSize:14, cursor:"pointer",
-              display:"flex", alignItems:"center", gap:6 }}>
-            {t.charAt(0).toUpperCase()+t.slice(1)}
-            {t==="pending"&&pendingCount>0&&(
-              <span style={{ background:"#dc2626", color:"#fff", borderRadius:"50%", minWidth:18, height:18, fontSize:10, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px" }}>{pendingCount}</span>
-            )}
-          </button>
-        ))}
+    <div className="erc-page">
+      <h2 style={{ fontWeight:700, color:"var(--text-primary)", fontSize:20, marginBottom:16 }}>Access Requests</h2>
+      <div style={{ display:"flex", gap:6, marginBottom:20 }}>
+        {["pending","approved","denied"].map(t=>{ const on=subTab===t;
+          return (
+            <button key={t} onClick={()=>setSubTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", fontSize:13, fontWeight:600, cursor:"pointer",
+              borderRadius:10, border:"1px solid "+(on?"var(--gold-bright)":"var(--border-default)"), background:on?"var(--gold-dim)":"transparent", color:on?"var(--gold-bright)":"var(--text-secondary)" }}>
+              {t.charAt(0).toUpperCase()+t.slice(1)}
+              {t==="pending"&&pendingCount>0&&(<span style={{ background:"var(--gold-bright)", color:"#03070f", borderRadius:"50%", minWidth:18, height:18, fontSize:10, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px" }}>{pendingCount}</span>)}
+            </button>
+          ); })}
       </div>
       {filtered.length===0
-        ? <div style={{ textAlign:"center", padding:40, color:"#94a3b8" }}>No {subTab} requests.</div>
+        ? <EmptyState icon="🔒" title="All clear — no pending requests" sub="Team members can request access from credential cards" />
         : <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-            {filtered.map(r=>(
-              <div key={r.id} style={S.card()}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:10 }}>
-                  <div>
-                    <div style={{ fontWeight:700, fontSize:15, color:"#0f172a", marginBottom:4, display:"flex", alignItems:"center", gap:8 }}>
-                      {r.requesterName} <TeamBadge team={r.requesterTeam} small />
+            {filtered.map(r=>{ const st=TEAM_STYLES[r.requesterTeam]||TEAM_STYLES.engineering;
+              return (
+                <div key={r.id} style={{ ...S.card(), borderLeft:"3px solid "+accent[r.status] }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:12 }}>
+                    <div style={{ display:"flex", gap:12 }}>
+                      <div style={{ width:40, height:40, borderRadius:"50%", background:st.bg, color:st.color, border:"2px solid "+st.border,
+                        display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:13, flexShrink:0 }}>{getInitials(r.requesterName)}</div>
+                      <div>
+                        <div style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)", marginBottom:4, display:"flex", alignItems:"center", gap:8 }}>
+                          {r.requesterName} <TeamBadge team={r.requesterTeam} small />
+                        </div>
+                        <div style={{ color:"var(--text-secondary)", fontSize:13 }}>→ Requesting access to: <strong style={{ color:"var(--text-primary)" }}>{r.credentialName}</strong></div>
+                        {r.message && <div style={{ marginTop:6, color:"var(--text-secondary)", fontSize:13, background:"rgba(0,0,0,0.25)", borderRadius:8, padding:"6px 10px", fontStyle:"italic" }}>"{r.message}"</div>}
+                        <div style={{ fontSize:12, color:"var(--text-muted)", marginTop:6 }}>{timeAgo(r.requestedAt)}{r.resolvedBy?" · Resolved by "+r.resolvedBy:""}</div>
+                      </div>
                     </div>
-                    <div style={{ color:"#64748b", fontSize:13 }}>Requesting access to: <strong>{r.credentialName}</strong></div>
-                    {r.message && <div style={{ marginTop:6, color:"#64748b", fontSize:13, background:"#f8fafc", borderRadius:6, padding:"6px 10px" }}>"{r.message}"</div>}
-                    <div style={{ fontSize:12, color:"#94a3b8", marginTop:6 }}>{timeAgo(r.requestedAt)}{r.resolvedBy?" · Resolved by "+r.resolvedBy:""}</div>
+                    {subTab==="pending"
+                      ? <div style={{ display:"flex", gap:8 }}>
+                          <button onClick={()=>handleResolve(r,"approved")} className="erc-prim" style={S.btn("primary")}>Approve</button>
+                          <button onClick={()=>handleResolve(r,"denied")} style={S.btn("danger")}>Deny</button>
+                        </div>
+                      : <span style={{ background:accent[r.status]+"22", color:accent[r.status], border:"1px solid "+accent[r.status]+"55", borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:600, height:"fit-content" }}>{r.status}</span>}
                   </div>
-                  {subTab==="pending" && (
-                    <div style={{ display:"flex", gap:8 }}>
-                      <button onClick={()=>handleResolve(r,"approved")} style={S.btn("primary")}>Approve</button>
-                      <button onClick={()=>handleResolve(r,"denied")} style={S.btn("danger")}>Deny</button>
-                    </div>
-                  )}
                 </div>
-              </div>
-            ))}
+              ); })}
           </div>}
     </div>
   );
@@ -1783,6 +1942,7 @@ function Dashboard({ user, onLogout }) {
   const warningShown = useRef(false);
 
   const isAdmin = session?.team==="admin";
+  const st = TEAM_STYLES[currentUser.team] || TEAM_STYLES.engineering;
 
   const refreshPending = useCallback(() => {
     if (!isAdmin) return;
@@ -1814,42 +1974,59 @@ function Dashboard({ user, onLogout }) {
   const TABS = isAdmin ? ["credentials","users","audit","requests"] : ["credentials"];
   const TAB_LABELS = { credentials:"Credentials", users:"Users", audit:"Audit Log", requests:"Access Requests" };
 
+  const gridBg = {
+    minHeight:"100vh", background:"var(--bg-base)",
+    backgroundImage:"linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)",
+    backgroundSize:"40px 40px",
+  };
+
   return (
-    <div style={{ minHeight:"100vh", background:"#f0f2f5" }}>
-      <style>{`@keyframes slideIn { from { transform:translateX(20px);opacity:0 } to { transform:none;opacity:1 } } * { box-sizing: border-box; }`}</style>
+    <div style={gridBg}>
+      <GlobalStyles />
       <ToastContainer toasts={toasts} />
 
-      <header style={{ background:"#0a0f1e", padding:"0 24px", height:64, display:"flex", alignItems:"center", justifyContent:"space-between",
-        position:"sticky", top:0, zIndex:100, boxShadow:"0 2px 20px rgba(0,0,0,0.3)" }}>
+      <header style={{ background:"rgba(8,15,30,0.95)", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
+        padding:"0 24px", height:64, display:"flex", alignItems:"center", justifyContent:"space-between",
+        position:"sticky", top:0, zIndex:100, borderBottom:"1px solid var(--border-subtle)" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:22 }}>🔐</span>
-          <span style={{ color:"#fff", fontWeight:800, fontSize:18, letterSpacing:-0.5 }}>VaultAccess</span>
+          <span style={{ width:32, height:32, borderRadius:9, background:"linear-gradient(135deg,#f5b800,#d4960a)", display:"inline-flex",
+            alignItems:"center", justifyContent:"center", fontSize:18, boxShadow:"0 2px 12px rgba(245,184,0,0.35)" }}>🦅</span>
+          <span style={{ color:"var(--text-primary)", fontWeight:700, fontSize:16, letterSpacing:-0.3 }}>Eagle RCM</span>
         </div>
-        <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
-          {TABS.map(t=>(
-            <button key={t} onClick={()=>setTab(t)} style={{ background:tab===t?"rgba(245,158,11,0.15)":"transparent",
-              border:"1px solid "+(tab===t?"rgba(245,158,11,0.4)":"transparent"), color:tab===t?"#f59e0b":"#94a3b8",
-              borderRadius:8, padding:"6px 14px", cursor:"pointer", fontWeight:600, fontSize:13, display:"flex", alignItems:"center", gap:6 }}>
-              {TAB_LABELS[t]}
-              {t==="requests"&&pendingCount>0&&(
-                <span style={{ background:"#dc2626", color:"#fff", borderRadius:"50%", minWidth:18, height:18, fontSize:10, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px" }}>{pendingCount}</span>
-              )}
-            </button>
-          ))}
-        </div>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <button onClick={()=>setShowProfile(p=>!p)} style={{ background:"linear-gradient(135deg,#f59e0b,#d97706)", border:"none",
-            borderRadius:"50%", width:38, height:38, cursor:"pointer", color:"#fff", fontWeight:800, fontSize:14,
-            display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>{currentUser.avatar}</button>
-          <div style={{ color:"#fff" }}>
-            <div style={{ fontSize:13, fontWeight:600 }}>{currentUser.name}</div>
-            <div style={{ fontSize:11, color:"#64748b" }}>{session?.team}</div>
+
+        {TABS.length>1 && (
+          <div style={{ display:"flex", gap:4, background:"rgba(0,0,0,0.3)", border:"1px solid var(--border-subtle)", borderRadius:12, padding:4 }}>
+            {TABS.map(t=>{ const on=tab===t;
+              return (
+                <button key={t} onClick={()=>setTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", fontSize:13, fontWeight:on?600:500, cursor:"pointer",
+                  borderRadius:9, border:"none", transition:"all 0.2s ease",
+                  background:on?"var(--bg-elevated)":"transparent", color:on?"var(--text-primary)":"var(--text-muted)",
+                  boxShadow:on?"0 2px 8px rgba(0,0,0,0.4)":"none" }}>
+                  {TAB_LABELS[t]}
+                  {t==="requests"&&pendingCount>0&&(<span style={{ width:6, height:6, borderRadius:"50%", background:"var(--gold-bright)" }} />)}
+                </button>
+              ); })}
           </div>
-          <button onClick={onLogout} style={{ ...S.btn("ghost"), borderColor:"rgba(255,255,255,0.15)", color:"#94a3b8", padding:"6px 12px", fontSize:12 }}>Sign Out</button>
+        )}
+
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+          {isAdmin && pendingCount>0 && (
+            <div style={{ position:"relative", fontSize:18, cursor:"default" }} title={`${pendingCount} pending request(s)`}>🔔
+              <span style={{ position:"absolute", top:-2, right:-2, width:8, height:8, borderRadius:"50%", background:"var(--gold-bright)" }} />
+            </div>
+          )}
+          <div style={{ width:1, height:28, background:"var(--border-subtle)" }} />
+          <button onClick={()=>setShowProfile(p=>!p)} style={{ background:st.bg, color:st.color, border:"2px solid "+st.border,
+            borderRadius:"50%", width:36, height:36, cursor:"pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>{currentUser.avatar}</button>
+          <div style={{ lineHeight:1.3 }}>
+            <div style={{ fontSize:13, fontWeight:600, color:"var(--text-primary)" }}>{currentUser.name}</div>
+            <div style={{ fontSize:11, color:"var(--text-muted)", textTransform:"capitalize" }}>{session?.team}</div>
+          </div>
+          <button onClick={onLogout} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"7px 14px", fontSize:12 }}>Sign Out</button>
         </div>
       </header>
 
-      <main style={{ maxWidth:1400, margin:"0 auto", padding:24 }}>
+      <main style={{ maxWidth:1280, margin:"0 auto", padding:28 }}>
         {tab==="credentials" && <CredentialsTab session={session} toast={toast} />}
         {tab==="users"&&isAdmin && <UsersTab session={session} toast={toast} />}
         {tab==="audit"&&isAdmin && <AuditTab session={session} toast={toast} />}
@@ -1858,7 +2035,7 @@ function Dashboard({ user, onLogout }) {
 
       {showProfile && (
         <>
-          <div onClick={()=>setShowProfile(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.2)", zIndex:499 }} />
+          <div onClick={()=>setShowProfile(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", zIndex:499 }} />
           <ProfilePanel session={session} currentUser={currentUser} onClose={()=>setShowProfile(false)}
             onUserUpdate={u=>setCurrentUser(u)} toast={toast} copyHistory={copyHistory} />
         </>
@@ -1870,7 +2047,7 @@ function Dashboard({ user, onLogout }) {
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
-export default function VaultAccess() {
+export default function EagleRCM() {
   const [stage, setStage] = useState({ name:"loading" });
 
   useEffect(() => {
@@ -1904,20 +2081,21 @@ export default function VaultAccess() {
     setStage({ name:"login" });
   }, []);
 
-  if (stage.name==="loading") return <Splash text="Starting VaultAccess…" />;
+  if (stage.name==="loading") return <><GlobalStyles /><Splash text="Starting Eagle RCM…" /></>;
   if (stage.name==="unconfigured") return (
-    <div style={{ minHeight:"100vh", background:"#060d1a", display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
-      <div style={{ background:"#0f1a2e", borderRadius:16, padding:32, maxWidth:480, color:"#e2e8f0", border:"1px solid rgba(245,158,11,0.2)" }}>
-        <h2 style={{ color:"#f59e0b", marginBottom:12 }}>Backend not configured</h2>
-        <p style={{ fontSize:14, color:"#94a3b8", lineHeight:1.6 }}>
+    <><GlobalStyles />
+    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <div style={{ ...glass, padding:32, maxWidth:480 }}>
+        <h2 style={{ color:"var(--gold-bright)", marginBottom:12 }}>Backend not configured</h2>
+        <p style={{ fontSize:14, color:"var(--text-secondary)", lineHeight:1.6 }}>
           Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to a
           <code> .env.local</code> file (see <code>SETUP.md</code>), then restart the dev server.
         </p>
       </div>
-    </div>
+    </div></>
   );
-  if (stage.name==="login") return <LoginScreen onLogin={handleLogin} />;
-  if (stage.name==="totp") return <TOTPScreen user={stage.user} onVerify={u=>setStage({ name:"dashboard", user:u })} onBack={()=>setStage({ name:"login" })} />;
+  if (stage.name==="login") return <><GlobalStyles /><LoginScreen onLogin={handleLogin} /></>;
+  if (stage.name==="totp") return <><GlobalStyles /><TOTPScreen user={stage.user} onVerify={u=>setStage({ name:"dashboard", user:u })} onBack={()=>setStage({ name:"login" })} /></>;
   if (stage.name==="dashboard") return <Dashboard user={stage.user} onLogout={handleLogout} />;
   return null;
 }
