@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useContext, useMemo } from "react";
 import * as XLSX from "xlsx";
 import * as OTPAuth from "otpauth";
 import QRCode from "qrcode";
@@ -8,6 +8,7 @@ import {
   listCredentials, createCredential, updateCredential, patchCredential, deleteCredential, bulkCreateCredentials,
   listUsers, logAudit, listAudit, createRequest, listRequests, resolveRequest,
   listFavourites, toggleFavourite, adminCreateUser, adminResetPassword, adminDeleteUser,
+  listDepartments, createDepartment, updateDepartment, deleteDepartment,
 } from "./lib/db";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -24,6 +25,27 @@ const CAT_ICONS = {
   Development:"💻", Infrastructure:"🔧", Design:"🎨", Marketing:"📣",
   Communication:"💬", Default:"🔑",
 };
+
+// ─── Departments (admin-editable "teams") ────────────────────────────────────
+const DEFAULT_DEPTS = [
+  { id:"engineering", label:"Engineering", color:"#60a5fa" },
+  { id:"marketing",   label:"Marketing",   color:"#f472b6" },
+  { id:"design",      label:"Design",      color:"#a78bfa" },
+  { id:"ops",         label:"Ops",         color:"#34d399" },
+];
+const DEPT_PALETTE = ["#60a5fa","#f472b6","#a78bfa","#34d399","#f59e0b","#22d3ee","#fb7185","#4ade80","#e879f9","#facc15"];
+const ADMIN_STYLE = { bg:"rgba(251,191,36,0.12)", color:"#fbbf24", border:"rgba(251,191,36,0.35)" };
+const FALLBACK_STYLE = { bg:"rgba(255,255,255,0.06)", color:"var(--text-secondary)", border:"var(--border-default)" };
+const hexA = (hex, a) => {
+  const h = String(hex||"#60a5fa").replace("#","");
+  const full = h.length===3 ? h.split("").map(c=>c+c).join("") : h;
+  const n = parseInt(full, 16); const r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  return `rgba(${r},${g},${b},${a})`;
+};
+const styleForColor = (color) => ({ bg:hexA(color,0.12), color, border:hexA(color,0.35) });
+const slugify = (s) => String(s||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+const DeptContext = React.createContext(null);
+const useDepts = () => useContext(DeptContext);
 const CAT_TINT = {
   Development:"rgba(96,165,250,0.15)", Infrastructure:"rgba(52,211,153,0.15)", Design:"rgba(167,139,250,0.15)",
   Marketing:"rgba(244,114,182,0.15)", Communication:"rgba(245,184,0,0.15)", Default:"rgba(255,255,255,0.08)",
@@ -278,11 +300,13 @@ function StrengthBar({ password }) {
 
 // ─── Team Badge ───────────────────────────────────────────────────────────────
 function TeamBadge({ team, small }) {
-  const st = TEAM_STYLES[team] || { bg:"rgba(255,255,255,0.06)", color:"var(--text-secondary)", border:"var(--border-default)" };
+  const ctx = useContext(DeptContext);
+  const st = ctx ? ctx.teamStyle(team) : (TEAM_STYLES[team] || FALLBACK_STYLE);
+  const label = ctx ? ctx.teamLabel(team) : team;
   return (
     <span style={{ background:st.bg, color:st.color, border:"1px solid "+st.border,
       borderRadius:20, padding:small?"2px 8px":"3px 10px",
-      fontSize:small?11:12, fontWeight:600, display:"inline-block", textTransform:"capitalize" }}>{team}</span>
+      fontSize:small?11:12, fontWeight:600, display:"inline-block", textTransform:"capitalize" }}>{label}</span>
   );
 }
 
@@ -679,6 +703,8 @@ function CredModal({ cred, onSave, onClose, session }) {
   const [showTime, setShowTime] = useState(!!(cred && cred.timeRestriction && cred.timeRestriction.enabled));
   const set = (k,v) => setForm(p=>({...p,[k]:v}));
   const toggleTeam = t => setSelTeams(p => p.includes(t)?p.filter(x=>x!==t):[...p,t]);
+  const ctx = useDepts();
+  const deptIds = ctx ? ctx.deptIds : DEFAULT_DEPTS.map(d=>d.id);
 
   const tr = form.timeRestriction;
   const trEnabled = !!(tr && tr.enabled);
@@ -824,12 +850,12 @@ function CredModal({ cred, onSave, onClose, session }) {
             </label>
             {!teamsAll && (
               <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                {TEAMS.filter(t=>t!=="admin").map(t=>{ const on=selTeams.includes(t);
+                {deptIds.map(t=>{ const on=selTeams.includes(t);
                   return (
                     <label key={t} style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer", padding:"5px 12px",
-                      border:"1px solid "+(on?"var(--info)":"var(--border-default)"), borderRadius:20, fontSize:12,
+                      border:"1px solid "+(on?"var(--info)":"var(--border-default)"), borderRadius:20, fontSize:12, textTransform:"capitalize",
                       background:on?"var(--info-bg)":"rgba(0,0,0,0.3)", color:on?"var(--info)":"var(--text-secondary)" }}>
-                      <input type="checkbox" checked={on} onChange={()=>toggleTeam(t)} style={{ display:"none" }} />{t}
+                      <input type="checkbox" checked={on} onChange={()=>toggleTeam(t)} style={{ display:"none" }} />{ctx?ctx.teamLabel(t):t}
                     </label>
                   ); })}
               </div>
@@ -853,9 +879,11 @@ function CredModal({ cred, onSave, onClose, session }) {
 
 // ─── User Modal ───────────────────────────────────────────────────────────────
 function UserModal({ user, onSave, onClose }) {
+  const ctx = useDepts();
+  const deptList = ctx ? ctx.list : DEFAULT_DEPTS;
   const [form, setForm] = useState(user
     ? { name:user.name, username:user.username, team:user.team, password:"" }
-    : { name:"", username:"", password:"", team:"engineering" });
+    : { name:"", username:"", password:"", team:(deptList[0]&&deptList[0].id)||"engineering" });
   const [busy, setBusy] = useState(false);
   const [pulse, setPulse] = useState(0);
   const set = (k,v) => setForm(p=>({...p,[k]:v}));
@@ -867,7 +895,7 @@ function UserModal({ user, onSave, onClose }) {
     setBusy(true);
     try { await onSave(form); } finally { setBusy(false); }
   };
-  const st = TEAM_STYLES[form.team] || TEAM_STYLES.engineering;
+  const st = ctx ? ctx.teamStyle(form.team) : (TEAM_STYLES[form.team] || TEAM_STYLES.engineering);
 
   return (
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -897,9 +925,10 @@ function UserModal({ user, onSave, onClose }) {
             {form.password && <StrengthBar password={form.password} />}
           </div>
           <div style={{ marginBottom:20 }}>
-            <label style={S.label}>Team</label>
+            <label style={S.label}>Department</label>
             <select value={form.team} onChange={e=>set("team",e.target.value)} style={S.input()}>
-              {TEAMS.map(t=><option key={t} value={t}>{t}</option>)}
+              <option value="admin">Admin</option>
+              {deptList.map(d=><option key={d.id} value={d.id}>{d.label}</option>)}
             </select>
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
@@ -1087,7 +1116,8 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
   const [cpError, setCpError] = useState("");
   const [busy, setBusy] = useState(false);
   const [myRequests, setMyRequests] = useState([]);
-  const st = TEAM_STYLES[currentUser.team] || TEAM_STYLES.engineering;
+  const dctx = useDepts();
+  const st = dctx ? dctx.teamStyle(currentUser.team) : (TEAM_STYLES[currentUser.team] || TEAM_STYLES.engineering);
 
   useEffect(() => {
     listRequests().then(rs => setMyRequests(rs.filter(r=>r.requesterId===session.userId))).catch(()=>{});
@@ -1207,7 +1237,8 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
 
 // ─── Matrix View ──────────────────────────────────────────────────────────────
 function MatrixView({ creds, toast, onReload }) {
-  const teams = ["engineering","marketing","design","ops"];
+  const ctx = useDepts();
+  const teams = ctx ? ctx.deptIds : DEFAULT_DEPTS.map(d=>d.id);
   const categories = [...new Set(creds.map(c=>c.category))];
   const hasTeam = (cred, team) => cred.teams==="all"||(Array.isArray(cred.teams)&&cred.teams.includes(team));
 
@@ -1329,6 +1360,7 @@ function CredentialsTab({ session, toast }) {
   const [warnDismissed, setWarnDismissed] = useState(false);
 
   const isAdmin = session.team==="admin";
+  const dctx = useDepts();
 
   const loadAll = useCallback(async () => {
     try {
@@ -1457,7 +1489,7 @@ function CredentialsTab({ session, toast }) {
       c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",
       trType(c),trDetails(c),trActive(c),c.addedBy,c.addedAt]);
     const ws1=XLSX.utils.aoa_to_sheet([h,...rows]); ws1["!cols"]=h.map(()=>({wch:20}));
-    const teams=["engineering","marketing","design","ops"];
+    const teams=dctx?dctx.deptIds:DEFAULT_DEPTS.map(d=>d.id);
     const mh=["Credential",...teams];
     const mr=all.map(c=>[c.portal,...teams.map(t=>(c.teams==="all"||(Array.isArray(c.teams)&&c.teams.includes(t)))?"✓":"")]);
     const ws2=XLSX.utils.aoa_to_sheet([mh,...mr]);
@@ -1514,7 +1546,7 @@ function CredentialsTab({ session, toast }) {
         <StatCard icon="📂" val={stats.categories} label="Categories" descriptor="distinct types" accent="var(--info)" />
         <StatCard icon="🏢" val={stats.clientsCount} label="Clients" descriptor="organisations" accent="#a78bfa" />
         <StatCard icon="⏰" val={stats.restricted} label="Restricted" descriptor="time-limited now" accent="var(--danger)" />
-        <StatCard icon="👥" val={stats.team} label={"Team · "+session.team} descriptor="team-scoped" accent={(TEAM_STYLES[session.team]||TEAM_STYLES.engineering).color} />
+        <StatCard icon="👥" val={stats.team} label={"Team · "+session.team} descriptor="team-scoped" accent={(dctx?dctx.teamStyle(session.team):(TEAM_STYLES[session.team]||TEAM_STYLES.engineering)).color} />
         {isAdmin && <StatCard icon="📊" val={stats.total} label="Total" descriptor="across the vault" accent="var(--success)" />}
       </div>
 
@@ -1626,6 +1658,7 @@ function CredentialsTab({ session, toast }) {
 
 // ─── Users Tab ────────────────────────────────────────────────────────────────
 function UsersTab({ session, toast }) {
+  const ctx = useDepts();
   const [users, setUsers] = useState([]);
   const [creds, setCreds] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1635,6 +1668,7 @@ function UsersTab({ session, toast }) {
   const [editUser, setEditUser] = useState(null);
   const [resetUser, setResetUser] = useState(null);
   const [matrixView, setMatrixView] = useState(false);
+  const [showDepts, setShowDepts] = useState(false);
 
   const loadAll = useCallback(async () => {
     try { const [u,c] = await Promise.all([listUsers(), listCredentials()]); setUsers(u); setCreds(c); }
@@ -1688,7 +1722,8 @@ function UsersTab({ session, toast }) {
         <div style={{ fontWeight:700, color:"var(--text-primary)", fontSize:20 }}>
           Users <span style={{ color:"var(--text-muted)", fontSize:14, fontWeight:400 }}>({users.length})</span>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          <button onClick={()=>setShowDepts(true)} className="erc-ghost" style={S.btn("ghost")}>🏷️ Departments</button>
           <button onClick={()=>setMatrixView(p=>!p)} className={matrixView?"erc-prim":"erc-ghost"} style={S.btn(matrixView?"primary":"ghost")}>{matrixView?"List View":"Matrix View"}</button>
           <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add User</button>
         </div>
@@ -1704,13 +1739,15 @@ function UsersTab({ session, toast }) {
               <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), padding:"10px 36px" }} placeholder="Search users..." />
             </div>
             <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-              {["All",...TEAMS].map(t=>(<button key={t} onClick={()=>setTeamFilter(t)} style={teamPill(teamFilter===t)}>{t}</button>))}
+              {["All","admin",...(ctx?ctx.deptIds:DEFAULT_DEPTS.map(d=>d.id))].map(t=>(
+                <button key={t} onClick={()=>setTeamFilter(t)} style={teamPill(teamFilter===t)}>{t==="All"?"All":(ctx?ctx.teamLabel(t):t)}</button>
+              ))}
             </div>
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))", gap:16 }}>
             {filtered.map((u,i)=>{
               const accessCount=creds.filter(c=>canAccess(c,u.team)).length;
-              const st=TEAM_STYLES[u.team]||TEAM_STYLES.engineering;
+              const st=ctx?ctx.teamStyle(u.team):(TEAM_STYLES[u.team]||TEAM_STYLES.engineering);
               const status = u.lockedUntil && new Date(u.lockedUntil)>new Date() ? { t:"Locked", c:"#ef4444" }
                 : u.lastLoginAt ? { t:"Active", c:"#10b981" } : { t:"No recent login", c:"#f59e0b" };
               return (
@@ -1757,6 +1794,82 @@ function UsersTab({ session, toast }) {
         <ResetPasswordModal user={resetUser} onClose={()=>setResetUser(null)}
           onSubmit={async (pw)=>{ try { await adminResetPassword(resetUser.id, pw); logAudit({ userId:session.userId, userName:session.userName, action:"password_changed", targetUserId:resetUser.id }); toast("Password reset!","success"); } catch (e) { toast(e.message,"error"); } }} />
       )}
+      {showDepts && <DepartmentsModal onClose={()=>setShowDepts(false)} toast={toast} />}
+    </div>
+  );
+}
+
+// ─── Departments Modal (admin) ───────────────────────────────────────────────
+function DepartmentsModal({ onClose, toast }) {
+  const ctx = useDepts();
+  const [rows, setRows] = useState(ctx ? ctx.list.map(d=>({ ...d })) : []);
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState(DEPT_PALETTE[0]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { if (ctx) setRows(ctx.list.map(d=>({ ...d }))); }, [ctx]);
+
+  const setRow = (id, patch) => setRows(rs => rs.map(r=>r.id===id?{ ...r, ...patch }:r));
+
+  const add = async () => {
+    const id = slugify(newName);
+    if (!id) { toast("Enter a department name","error"); return; }
+    if (rows.some(r=>r.id===id)) { toast("That department already exists","error"); return; }
+    setBusy(true);
+    try { await createDepartment({ id, label:newName.trim(), color:newColor }); toast("Department added","success"); setNewName(""); ctx.reload(); }
+    catch (e) { toast(e.message.includes("does not exist")?"Run migration_3_departments.sql in Supabase first.":e.message,"error"); }
+    finally { setBusy(false); }
+  };
+  const save = async (d) => {
+    try { await updateDepartment(d.id, { label:d.label, color:d.color }); toast("Department saved","success"); ctx.reload(); }
+    catch (e) { toast(e.message,"error"); }
+  };
+  const remove = async (d) => {
+    if (!window.confirm(`Remove "${d.label}"?\nUsers and credentials that reference it keep the value but lose its colour/label.`)) return;
+    try { await deleteDepartment(d.id); toast("Department removed","info"); ctx.reload(); }
+    catch (e) { toast(e.message,"error"); }
+  };
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:520, maxHeight:"85vh", overflowY:"auto" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+          <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)" }}>Departments</h3>
+          <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 10px" }}>✕</button>
+        </div>
+        <p style={{ color:"var(--text-secondary)", fontSize:13, marginBottom:18 }}>Rename, recolour, add or remove departments. The “Admin” role is fixed and not listed here.</p>
+
+        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:18 }}>
+          {rows.map(d=>(
+            <div key={d.id} style={{ ...fieldBox, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+              <div style={{ display:"flex", gap:4, flexWrap:"wrap", maxWidth:140 }}>
+                {DEPT_PALETTE.map(c=>(
+                  <button key={c} onClick={()=>setRow(d.id,{ color:c })} title={c}
+                    style={{ width:16, height:16, borderRadius:"50%", background:c, cursor:"pointer",
+                      border:d.color===c?"2px solid #fff":"2px solid transparent" }} />
+                ))}
+              </div>
+              <input value={d.label} onChange={e=>setRow(d.id,{ label:e.target.value })} style={{ ...S.input(), flex:1, minWidth:120, padding:"6px 10px" }} />
+              <button onClick={()=>save(d)} className="erc-prim" style={{ ...S.btn("primary"), padding:"6px 12px", fontSize:12 }}>Save</button>
+              <button onClick={()=>remove(d)} style={{ ...S.btn("danger"), padding:"6px 10px", fontSize:12 }}>Remove</button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ borderTop:"1px solid var(--border-subtle)", paddingTop:16 }}>
+          <label style={S.label}>Add department</label>
+          <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+            <div style={{ display:"flex", gap:4, flexWrap:"wrap", maxWidth:140 }}>
+              {DEPT_PALETTE.map(c=>(
+                <button key={c} onClick={()=>setNewColor(c)} title={c}
+                  style={{ width:16, height:16, borderRadius:"50%", background:c, cursor:"pointer", border:newColor===c?"2px solid #fff":"2px solid transparent" }} />
+              ))}
+            </div>
+            <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Finance" style={{ ...S.input(), flex:1, minWidth:140, padding:"8px 12px" }} />
+            <button onClick={add} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>+ Add</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1856,6 +1969,7 @@ function AuditTab({ session, toast }) {
 
 // ─── Access Requests Tab ──────────────────────────────────────────────────────
 function AccessRequestsTab({ session, toast, onChange }) {
+  const rctx = useDepts();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [subTab, setSubTab] = useState("pending");
@@ -1897,7 +2011,7 @@ function AccessRequestsTab({ session, toast, onChange }) {
       {filtered.length===0
         ? <EmptyState icon="🔒" title="All clear — no pending requests" sub="Team members can request access from credential cards" />
         : <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-            {filtered.map(r=>{ const st=TEAM_STYLES[r.requesterTeam]||TEAM_STYLES.engineering;
+            {filtered.map(r=>{ const st=rctx?rctx.teamStyle(r.requesterTeam):(TEAM_STYLES[r.requesterTeam]||TEAM_STYLES.engineering);
               return (
                 <div key={r.id} style={{ ...S.card(), borderLeft:"3px solid "+accent[r.status] }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:12 }}>
@@ -1942,7 +2056,23 @@ function Dashboard({ user, onLogout }) {
   const warningShown = useRef(false);
 
   const isAdmin = session?.team==="admin";
-  const st = TEAM_STYLES[currentUser.team] || TEAM_STYLES.engineering;
+
+  const [depts, setDepts] = useState(DEFAULT_DEPTS);
+  const reloadDepts = useCallback(() => {
+    listDepartments().then(d => { if (d && d.length) setDepts(d); }).catch(()=>{});
+  }, []);
+  useEffect(() => { reloadDepts(); }, [reloadDepts]);
+  const deptCtx = useMemo(() => {
+    const byId = Object.fromEntries(depts.map(d=>[d.id,d]));
+    return {
+      list: depts, byId, reload: reloadDepts,
+      teamStyle: (t)=> t==="admin"?ADMIN_STYLE : (byId[t]?styleForColor(byId[t].color):FALLBACK_STYLE),
+      teamLabel: (t)=> t==="admin"?"Admin":(byId[t]?byId[t].label:t),
+      deptIds: depts.map(d=>d.id),
+      options: ["admin", ...depts.map(d=>d.id)],
+    };
+  }, [depts, reloadDepts]);
+  const st = deptCtx.teamStyle(currentUser.team);
 
   const refreshPending = useCallback(() => {
     if (!isAdmin) return;
@@ -1981,6 +2111,7 @@ function Dashboard({ user, onLogout }) {
   };
 
   return (
+    <DeptContext.Provider value={deptCtx}>
     <div style={gridBg}>
       <GlobalStyles />
       <ToastContainer toasts={toasts} />
@@ -1989,8 +2120,6 @@ function Dashboard({ user, onLogout }) {
         padding:"0 24px", height:64, display:"flex", alignItems:"center", justifyContent:"space-between",
         position:"sticky", top:0, zIndex:100, borderBottom:"1px solid var(--border-subtle)" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ width:32, height:32, borderRadius:9, background:"linear-gradient(135deg,#f5b800,#d4960a)", display:"inline-flex",
-            alignItems:"center", justifyContent:"center", fontSize:18, boxShadow:"0 2px 12px rgba(245,184,0,0.35)" }}>🦅</span>
           <span style={{ color:"var(--text-primary)", fontWeight:700, fontSize:16, letterSpacing:-0.3 }}>Eagle RCM</span>
         </div>
 
@@ -2043,6 +2172,7 @@ function Dashboard({ user, onLogout }) {
 
       {showInactivity && <InactivityModal countdown={countdown} onStay={()=>{ resetActivity(); }} onLogout={onLogout} />}
     </div>
+    </DeptContext.Provider>
   );
 }
 

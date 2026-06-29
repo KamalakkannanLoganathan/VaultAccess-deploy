@@ -120,6 +120,29 @@ export async function bulkCreateCredentials(creds, addedBy) {
   if (error) throw error;
 }
 
+// ─── departments (admin-editable) ───────────────────────────────────────────
+export async function listDepartments() {
+  const { data, error } = await supabase.from("departments").select("*").order("sort").order("label");
+  if (error) throw error;
+  return data.map((r) => ({ id: r.id, label: r.label, color: r.color || "#60a5fa", sort: r.sort || 0 }));
+}
+export async function createDepartment({ id, label, color }) {
+  const { error } = await supabase.from("departments").insert({ id, label, color: color || "#60a5fa", sort: 99 });
+  if (error) throw error;
+}
+export async function updateDepartment(id, patch) {
+  const row = {};
+  if ("label" in patch) row.label = patch.label;
+  if ("color" in patch) row.color = patch.color;
+  if ("sort" in patch) row.sort = patch.sort;
+  const { error } = await supabase.from("departments").update(row).eq("id", id);
+  if (error) throw error;
+}
+export async function deleteDepartment(id) {
+  const { error } = await supabase.from("departments").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ─── users (read) ───────────────────────────────────────────────────────────
 export async function listUsers() {
   const { data, error } = await supabase.from("profiles").select("*").order("name");
