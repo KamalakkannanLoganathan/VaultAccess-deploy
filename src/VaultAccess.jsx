@@ -391,9 +391,7 @@ function LoginScreen({ onLogin }) {
       <Aurora />
       <div style={{ position:"relative", zIndex:1, width:"100%", maxWidth:440, display:"flex", flexDirection:"column", alignItems:"center" }}>
         <div style={{ textAlign:"center", marginBottom:28 }}>
-          <div style={{ width:64, height:64, margin:"0 auto 16px", borderRadius:18, fontSize:34,
-            background:"linear-gradient(135deg,#f5b800,#d4960a)", display:"flex", alignItems:"center", justifyContent:"center",
-            boxShadow:"0 8px 32px rgba(245,184,0,0.4)" }}>🦅</div>
+          
           <h1 style={{ color:"var(--text-primary)", fontSize:28, fontWeight:800, letterSpacing:-1 }}>Eagle RCM</h1>
           <p style={{ color:"var(--text-secondary)", fontSize:13, marginTop:6 }}>Credential intelligence for high-performing teams</p>
         </div>
