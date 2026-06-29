@@ -9,6 +9,10 @@ import {
   listUsers, logAudit, listAudit, createRequest, listRequests, resolveRequest,
   listFavourites, toggleFavourite, adminCreateUser, adminResetPassword, adminDeleteUser,
   listDepartments, createDepartment, updateDepartment, deleteDepartment,
+  listClients, createClient, updateClient, archiveClient,
+  createInviteToken, listInviteTokens, revokeInviteToken,
+  listPendingRegistrations, approveRegistration, rejectRegistration,
+  inviteValidate, inviteCheckUsername, inviteSubmit,
 } from "./lib/db";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -34,6 +38,15 @@ const DEFAULT_DEPTS = [
   { id:"ops",         label:"Ops",         color:"#34d399" },
 ];
 const DEPT_PALETTE = ["#60a5fa","#f472b6","#a78bfa","#34d399","#f59e0b","#22d3ee","#fb7185","#4ade80","#e879f9","#facc15"];
+
+// ─── Clients (managed entities with privilege levels) ────────────────────────
+const CLIENT_PALETTE = ["#6366f1","#f59e0b","#10b981","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f97316","#06b6d4","#84cc16","#a855f7","#64748b"];
+const PRIVILEGE_META = {
+  standard:     { label:"Standard",     color:"#60a5fa", desc:"All allowed team members can view passwords" },
+  restricted:   { label:"Restricted",   color:"#f59e0b", desc:"Team members see credentials but not passwords" },
+  confidential: { label:"Confidential", color:"#ef4444", desc:"Admin eyes only" },
+};
+const autoCode = (name) => String(name||"").replace(/[^A-Za-z]/g,"").toUpperCase().slice(0,3) || "CLT";
 const ADMIN_STYLE = { bg:"rgba(251,191,36,0.12)", color:"#fbbf24", border:"rgba(251,191,36,0.35)" };
 const FALLBACK_STYLE = { bg:"rgba(255,255,255,0.06)", color:"var(--text-secondary)", border:"var(--border-default)" };
 const hexA = (hex, a) => {
@@ -141,13 +154,13 @@ function evalTimeRestriction(tr, now = new Date()) {
 const isRestrictedState = (s) => ["outside","wrongday","expired","expiring"].includes(s);
 
 // ─── Count-up hook ───────────────────────────────────────────────────────────
-function useCountUp(target, duration = 800) {
+function useCountUp(target, duration = 600) {
   const [val, setVal] = useState(0);
   useEffect(() => {
     const t0 = performance.now(); let raf;
     const tick = (now) => {
       const p = Math.min(1, (now - t0) / duration);
-      const eased = 1 - Math.pow(1 - p, 3);
+      const eased = p >= 1 ? 1 : 1 - Math.pow(2, -10 * p); // easeOutExpo
       setVal(Math.round((Number(target)||0) * eased));
       if (p < 1) raf = requestAnimationFrame(tick); else setVal(Number(target)||0);
     };
@@ -196,7 +209,7 @@ const S = {
   overlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)",
     zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 },
   modal: (extra) => ({ background:"var(--bg-elevated)", border:"1px solid var(--border-default)", borderTop:"2px solid var(--gold-bright)",
-    borderRadius:20, boxShadow:"0 24px 80px rgba(0,0,0,0.6)", ...(extra||{}) }),
+    borderRadius:20, boxShadow:"0 24px 80px rgba(0,0,0,0.6)", animation:"ercModalIn 0.2s cubic-bezier(0.34,1.56,0.64,1)", ...(extra||{}) }),
 };
 
 // ─── Global styles (CSS variables, keyframes, polish) ────────────────────────
@@ -241,7 +254,20 @@ function GlobalStyles() {
       @keyframes ercDrawerIn { from{transform:translateX(100%)} to{transform:translateX(0)} }
       @keyframes ercPulse { 0%{transform:scale(1)} 50%{transform:scale(1.15)} 100%{transform:scale(1)} }
       @keyframes ercSlideDown { from{opacity:0; transform:translateY(20px)} to{opacity:1; transform:translateY(0)} }
+      @keyframes ercDotPulse { 0%{opacity:0.6} 50%{opacity:1} 100%{opacity:0.6} }
+      @keyframes ercReveal { from{letter-spacing:-8px; opacity:0} to{letter-spacing:normal; opacity:1} }
+      @keyframes ercBounce { 0%{transform:scale(0.85)} 50%{transform:scale(1.05)} 100%{transform:scale(1)} }
+      @keyframes ercModalIn { from{transform:scale(0.95); opacity:0} to{transform:scale(1); opacity:1} }
+      @keyframes ercFloatY { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+      @keyframes ercShimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
       .erc-page { animation:ercFade 0.15s ease; }
+      .erc-card { position:relative; }
+      .erc-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; border-radius:16px 16px 0 0;
+        background:linear-gradient(90deg, transparent 0%, var(--gold-bright) 50%, transparent 100%); opacity:0; transition:opacity .3s ease; pointer-events:none; }
+      .erc-card:hover::before { opacity:1; }
+      .erc-skel { background:linear-gradient(90deg, var(--bg-surface) 25%, var(--bg-elevated) 50%, var(--bg-surface) 75%);
+        background-size:200% 100%; animation:ercShimmer 1.5s infinite; }
+      .erc-modalcard { animation:ercModalIn 0.2s cubic-bezier(0.34,1.56,0.64,1); }
     `}</style>
   );
 }
@@ -366,6 +392,7 @@ function LoginScreen({ onLogin }) {
       }
       const user = await getMyProfile();
       if (!user) { setError("Your account has no profile. Contact an admin."); await supabase.auth.signOut(); return; }
+      if (user.active === false) { setError("Your account is awaiting admin approval."); await supabase.auth.signOut(); return; }
       await touchLastLogin(user.id);
       if (user.twoFactorEnabled) {
         onLogin({ stage:"totp", user });
@@ -440,6 +467,219 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ─── Registration (invite link) ──────────────────────────────────────────────
+const genToken = () => { const a=new Uint8Array(16); crypto.getRandomValues(a); return [...a].map(b=>b.toString(16).padStart(2,"0")).join(""); };
+
+function RegistrationScreen({ token, onBackToLogin }) {
+  const [phase, setPhase] = useState("loading"); // loading | invalid | form | success
+  const [reason, setReason] = useState("");
+  const [info, setInfo] = useState({ allowedTeam:null, teams:[], label:"" });
+  const [form, setForm] = useState({ fullName:"", username:"", password:"", confirm:"", team:"" });
+  const [unameState, setUnameState] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const set = (k,v)=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(() => {
+    inviteValidate(token).then(r => {
+      if (!r.valid) { setReason(r.reason || "Invalid invite link."); setPhase("invalid"); return; }
+      setInfo({ allowedTeam:r.allowedTeam, teams:r.teams||[], label:r.label||"" });
+      setForm(f => ({ ...f, team: r.allowedTeam || (r.teams&&r.teams[0]?r.teams[0].id:"") }));
+      setPhase("form");
+    }).catch(e => { setReason(e.message); setPhase("invalid"); });
+  }, [token]);
+
+  useEffect(() => {
+    const u = form.username.trim();
+    if (!u) { setUnameState(null); return; }
+    setUnameState("checking");
+    const t = setTimeout(() => { inviteCheckUsername(u).then(r => setUnameState(r.available?"available":"taken")).catch(()=>setUnameState(null)); }, 400);
+    return () => clearTimeout(t);
+  }, [form.username]);
+
+  const submit = async (e) => {
+    e.preventDefault(); setError("");
+    if (!form.fullName.trim()||!form.username.trim()||!form.password) { setError("Fill in all required fields."); return; }
+    if (unameState==="taken") { setError("That username is already taken."); return; }
+    if (form.password!==form.confirm) { setError("Passwords don't match."); return; }
+    if (pwStrength(form.password)<3) { setError("Password is too weak."); return; }
+    setBusy(true);
+    try {
+      await inviteSubmit({ token, fullName:form.fullName.trim(), username:form.username.trim(), password:form.password, requestedTeam: info.allowedTeam || form.team });
+      setPhase("success");
+    } catch (err) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const dInput = { ...S.input(), background:"rgba(0,0,0,0.35)" };
+  const wrap = (children) => (
+    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center", justifyContent:"center", padding:20, position:"relative" }}>
+      <Aurora /><div style={{ position:"relative", zIndex:1, width:"100%", maxWidth:440, display:"flex", flexDirection:"column", alignItems:"center" }}>{children}</div>
+    </div>
+  );
+  const logo = (
+    <div style={{ textAlign:"center", marginBottom:24 }}>
+      <div style={{ width:64, height:64, margin:"0 auto 16px", borderRadius:18, fontSize:34, background:"linear-gradient(135deg,#f5b800,#d4960a)", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 8px 32px rgba(245,184,0,0.4)" }}>🦅</div>
+      <h1 style={{ color:"var(--text-primary)", fontSize:28, fontWeight:800, letterSpacing:-1 }}>Eagle RCM</h1>
+      <p style={{ color:"var(--text-secondary)", fontSize:13, marginTop:6 }}>You've been invited to join</p>
+    </div>
+  );
+
+  if (phase==="loading") return wrap(<div style={{ color:"var(--text-secondary)" }}>Checking invite…</div>);
+  if (phase==="invalid") return wrap(<>{logo}
+    <div style={{ ...glass, padding:32, width:"100%", textAlign:"center" }}>
+      <div style={{ fontSize:34, marginBottom:10 }}>⚠️</div>
+      <div style={{ color:"var(--text-primary)", fontWeight:600, marginBottom:12 }}>{reason}</div>
+      <button onClick={onBackToLogin} style={{ background:"none", border:"none", color:"var(--gold-bright)", cursor:"pointer", fontSize:13 }}>← Back to login</button>
+    </div></>);
+  if (phase==="success") return wrap(<>{logo}
+    <div style={{ ...glass, padding:32, width:"100%", textAlign:"center" }}>
+      <div style={{ width:64, height:64, borderRadius:"50%", background:"var(--gold-dim)", color:"var(--gold-bright)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:32, margin:"0 auto 14px" }}>✓</div>
+      <h3 style={{ color:"var(--text-primary)", fontWeight:700, fontSize:18, marginBottom:8 }}>Request submitted!</h3>
+      <p style={{ color:"var(--text-secondary)", fontSize:14, marginBottom:16 }}>Your admin has been notified. You'll be able to log in once your account is approved.</p>
+      <button onClick={onBackToLogin} style={{ background:"none", border:"none", color:"var(--gold-bright)", cursor:"pointer", fontSize:13 }}>← Back to login</button>
+    </div></>);
+
+  const teamLocked = !!info.allowedTeam;
+  return wrap(<>{logo}
+    <form onSubmit={submit} style={{ width:"100%", ...glass, borderTop:"1px solid rgba(245,184,0,0.3)", padding:32 }}>
+      <div style={{ marginBottom:14 }}><label style={S.label}>Full Name</label>
+        <input value={form.fullName} onChange={e=>set("fullName",e.target.value)} style={dInput} required /></div>
+      <div style={{ marginBottom:14 }}><label style={S.label}>Username</label>
+        <input value={form.username} onChange={e=>set("username",e.target.value.toLowerCase())} style={dInput} required />
+        {form.username && unameState==="available" && <p style={{ color:"var(--success)", fontSize:12, marginTop:4 }}>✓ Available</p>}
+        {form.username && unameState==="taken" && <p style={{ color:"#fca5a5", fontSize:12, marginTop:4 }}>✗ Already taken</p>}
+        {form.username && unameState==="checking" && <p style={{ color:"var(--text-muted)", fontSize:12, marginTop:4 }}>Checking…</p>}
+      </div>
+      <div style={{ marginBottom:14 }}><label style={S.label}>Password</label>
+        <input type="password" value={form.password} onChange={e=>set("password",e.target.value)} style={dInput} required />
+        <StrengthBar password={form.password} /></div>
+      <div style={{ marginBottom:14 }}><label style={S.label}>Confirm Password</label>
+        <input type="password" value={form.confirm} onChange={e=>set("confirm",e.target.value)} style={dInput} required /></div>
+      <div style={{ marginBottom:18 }}><label style={S.label}>Team</label>
+        {teamLocked
+          ? <input value={(info.teams.find(t=>t.id===info.allowedTeam)||{}).label || info.allowedTeam} disabled style={{ ...dInput, opacity:0.6 }} />
+          : <select value={form.team} onChange={e=>set("team",e.target.value)} style={dInput}>
+              {info.teams.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>}
+      </div>
+      {error && <div style={{ background:"var(--danger-bg)", border:"1px solid rgba(239,68,68,0.3)", color:"#fca5a5", borderRadius:10, padding:"10px 14px", fontSize:13, marginBottom:14 }}>{error}</div>}
+      <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), width:"100%", height:48, justifyContent:"center", opacity:busy?0.7:1 }}>{busy?"Submitting…":"Request Access"}</button>
+      <p style={{ color:"var(--text-muted)", fontSize:12, textAlign:"center", marginTop:12 }}>Your account will be active once approved by an admin.</p>
+    </form>
+  </>);
+}
+
+// ─── Generate Invite Link Modal ───────────────────────────────────────────────
+function GenerateInviteModal({ createdBy, onClose, onCreated, toast }) {
+  const ctx = useDepts();
+  const deptList = ctx ? ctx.list : DEFAULT_DEPTS;
+  const [label, setLabel] = useState("");
+  const [team, setTeam] = useState("");
+  const [maxUses, setMaxUses] = useState(1);
+  const [expiry, setExpiry] = useState(72);
+  const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const link = created ? `${window.location.origin}?invite=${created.token}` : "";
+
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const token = genToken();
+      const expiresAt = new Date(Date.now() + expiry*3600*1000).toISOString();
+      const rec = await createInviteToken({ token, label, allowedTeam:team||null, maxUses:Math.max(1,Math.min(10,+maxUses||1)), expiresAt }, createdBy);
+      setCreated(rec); onCreated && onCreated(); toast("Invite link generated","success");
+    } catch (e) { toast(e.message && e.message.includes("does not exist") ? "Run migration_5_registration.sql in Supabase first." : e.message, "error"); }
+    finally { setBusy(false); }
+  };
+  const copy = () => { navigator.clipboard.writeText(link).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2000); }); };
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:460 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+          <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)" }}>Generate Invite Link</h3>
+          <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 10px" }}>✕</button>
+        </div>
+        {!created ? (<>
+          <div style={{ marginBottom:14 }}><label style={S.label}>Label / note</label>
+            <input value={label} onChange={e=>setLabel(e.target.value)} style={S.input()} placeholder="e.g. For new marketing hire" /></div>
+          <div style={{ marginBottom:14 }}><label style={S.label}>Pre-assign team (optional)</label>
+            <select value={team} onChange={e=>setTeam(e.target.value)} style={S.input()}>
+              <option value="">Admin picks on approval</option>
+              {deptList.map(d=><option key={d.id} value={d.id}>{d.label}</option>)}
+            </select></div>
+          <div style={{ display:"flex", gap:12, marginBottom:20 }}>
+            <div style={{ flex:1 }}><label style={S.label}>Max uses</label>
+              <input type="number" min={1} max={10} value={maxUses} onChange={e=>setMaxUses(e.target.value)} style={S.input()} /></div>
+            <div style={{ flex:1 }}><label style={S.label}>Expiry</label>
+              <select value={expiry} onChange={e=>setExpiry(+e.target.value)} style={S.input()}>
+                <option value={24}>24 hours</option><option value={48}>48 hours</option><option value={72}>72 hours</option><option value={168}>7 days</option>
+              </select></div>
+          </div>
+          <button onClick={generate} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", opacity:busy?0.7:1 }}>{busy?"Generating…":"Generate Link"}</button>
+        </>) : (<>
+          <p style={{ color:"var(--text-secondary)", fontSize:13, marginBottom:10 }}>Share this link with the person you want to invite.</p>
+          <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+            <input readOnly value={link} style={{ ...S.input(), fontFamily:"var(--font-mono)", fontSize:12 }} onFocus={e=>e.target.select()} />
+            <button onClick={copy} className="erc-prim" style={{ ...S.btn("primary"), flexShrink:0 }}>{copied?"✓ Copied":"Copy"}</button>
+          </div>
+          <p style={{ color:"var(--text-muted)", fontSize:12, marginBottom:18 }}>
+            {created.maxUses>1?`Usable up to ${created.maxUses} times.`:"Single-use link."} Expires {fmtDate(created.expiresAt)}.
+          </p>
+          <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), width:"100%", justifyContent:"center" }}>Done</button>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+// ─── Reject Registration Modal ────────────────────────────────────────────────
+function RejectModal({ reg, onClose, onSubmit }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const go = async () => { setBusy(true); try { await onSubmit(reason); onClose(); } finally { setBusy(false); } };
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:420 }}>
+        <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)", marginBottom:8 }}>Reject {reg.fullName}?</h3>
+        <p style={{ color:"var(--text-secondary)", fontSize:13, marginBottom:14 }}>Their pending account will be removed.</p>
+        <label style={S.label}>Reason (optional)</label>
+        <textarea value={reason} onChange={e=>setReason(e.target.value)} style={{ ...S.input(), resize:"vertical", minHeight:70, marginBottom:16 }} placeholder="Shared internally only" />
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+          <button onClick={go} disabled={busy} style={{ ...S.btn("danger"), opacity:busy?0.7:1 }}>Reject</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Approve Registration Modal ───────────────────────────────────────────────
+function ApproveRegModal({ reg, onClose, onConfirm }) {
+  const ctx = useDepts();
+  const deptList = ctx ? ctx.list : DEFAULT_DEPTS;
+  const [team, setTeam] = useState(reg.requestedTeam || (deptList[0]&&deptList[0].id) || "engineering");
+  const [busy, setBusy] = useState(false);
+  const go = async () => { setBusy(true); try { await onConfirm(team); } finally { setBusy(false); } };
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:420 }}>
+        <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)", marginBottom:8 }}>Approve {reg.fullName}?</h3>
+        <p style={{ color:"var(--text-secondary)", fontSize:13, marginBottom:16 }}>@{reg.username} will be able to log in immediately.</p>
+        <label style={S.label}>Assign department</label>
+        <select value={team} onChange={e=>setTeam(e.target.value)} style={{ ...S.input(), marginBottom:20 }}>
+          {deptList.map(d=><option key={d.id} value={d.id}>{d.label}</option>)}
+        </select>
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+          <button onClick={go} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>Approve</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── TOTP Screen ──────────────────────────────────────────────────────────────
 function TOTPScreen({ user, onVerify, onBack }) {
   const [code, setCode] = useState("");
@@ -504,7 +744,7 @@ function InactivityModal({ countdown, onStay, onLogout }) {
 }
 
 // ─── Credential Card ──────────────────────────────────────────────────────────
-function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
+function CredentialCard({ cred, session, client, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
   requests, onRequestAccess, toast, onPatch, index }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
@@ -512,8 +752,11 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify,
   const isAdmin = session.team === "admin";
   const age = daysSince(cred.updatedAt);
   const ageColor = age < 30 ? "var(--success)" : age < 60 ? "var(--warning)" : "var(--danger)";
-  const catIcon = CAT_ICONS[cred.category] || CAT_ICONS.Default;
-  const catTint = CAT_TINT[cred.category] || CAT_TINT.Default;
+  const privilege = client ? client.privilegeLevel : "standard";
+  const confidentialBlock = privilege === "confidential" && !isAdmin;
+  const restrictedPw = privilege === "restricted" && !isAdmin;
+  const clientColor = client ? client.color : "#64748b";
+  const headTint = hexA(clientColor, 0.15);
   const pendingReq = requests.find(r => r.credentialId===cred.id && r.requesterId===session.userId && r.status==="pending");
   const expiryDays = cred.passwordExpiryDays || 90;
   const daysLeft = expiryDays - age;
@@ -541,12 +784,14 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify,
     <div style={{ ...fieldBox, ...(extraBg?{ background:extraBg }:{}) }}>
       <div style={{ ...microLabel, marginBottom:4 }}>{label}</div>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-        {hasAccess ? <code style={monoVal(masked && !showPw)}>{value}</code> : <span style={{ fontSize:13, color:"var(--text-muted)", flex:1 }}>No access</span>}
+        {hasAccess
+          ? <code key={masked?(showPw?"r":"m"):"v"} style={{ ...monoVal(masked && !showPw), ...(masked&&showPw?{ animation:"ercReveal 0.2s ease" }:{}) }}>{value}</code>
+          : <span style={{ fontSize:13, color:"var(--text-muted)", flex:1 }}>No access</span>}
         {hasAccess && (
           <div style={{ display:"flex", gap:6, flexShrink:0 }}>
             {showToggle && <button onClick={()=>setShowPw(p=>!p)} disabled={lockedByTime} style={iconBtn(false, lockedByTime)}>{showPw?"🙈":"👁"}</button>}
             <button onClick={()=>handleCopyField(field==="verify"?value:value, label, copyKey)} disabled={lockedByTime}
-              style={iconBtn(copied===copyKey, lockedByTime)}>{copied===copyKey?"✓":"📋"}</button>
+              style={{ ...iconBtn(copied===copyKey, lockedByTime), ...(copied===copyKey?{ animation:"ercBounce 0.3s" }:{}) }}>{copied===copyKey?"✓":"📋"}</button>
           </div>
         )}
       </div>
@@ -559,8 +804,8 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify,
       {/* Header */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
         <div style={{ display:"flex", gap:10, flex:1, minWidth:0 }}>
-          <span style={{ width:36, height:36, borderRadius:"50%", background:catTint, display:"inline-flex",
-            alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>{catIcon}</span>
+          <span style={{ width:36, height:36, borderRadius:"50%", background:headTint, border:"1px solid "+hexA(clientColor,0.3),
+            display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🔑</span>
           <div style={{ minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
               <span style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)" }}>{cred.portal}</span>
@@ -570,17 +815,27 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify,
               )}
             </div>
             {cred.url && <a href={"https://"+cred.url} target="_blank" rel="noreferrer" style={{ color:"var(--text-secondary)", fontSize:12, textDecoration:"none" }}>🔗 {cred.url}</a>}
-            {cred.client && (
-              <div style={{ marginTop:3 }}>
-                <span style={{ background:"var(--info-bg)", color:"var(--info)", border:"1px solid rgba(96,165,250,0.3)",
-                  borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>🏢 {cred.client}</span>
-              </div>
-            )}
+            <div style={{ marginTop:4, display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+              {(client || cred.clientName) && (
+                <span style={{ background:hexA(clientColor,0.15), color:clientColor, border:"1px solid "+hexA(clientColor,0.4),
+                  borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600, display:"inline-flex", alignItems:"center", gap:5 }}>
+                  <span style={{ width:7, height:7, borderRadius:"50%", background:clientColor,
+                    animation: privilege==="confidential"?"ercDotPulse 3s ease-in-out infinite":"none" }} />
+                  {client ? client.name : cred.clientName}
+                </span>
+              )}
+              {privilege==="restricted" && (
+                <span style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.3)",
+                  borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>🔒 Restricted</span>
+              )}
+              {privilege==="confidential" && (
+                <span style={{ background:"var(--danger-bg)", color:"#fca5a5", border:"1px solid rgba(239,68,68,0.3)",
+                  borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>🔒 Confidential</span>
+              )}
+            </div>
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
-          <span style={{ background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid var(--border-subtle)",
-            borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>{cred.category}</span>
           <button onClick={()=>onFavToggle(cred.id)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:20,
             color:isFav?"var(--gold-bright)":"var(--text-muted)", padding:0 }}>★</button>
         </div>
@@ -606,24 +861,40 @@ function CredentialCard({ cred, session, onEdit, onDelete, onCopy, onCopyVerify,
           borderRadius:10, padding:"8px 12px", fontSize:12, fontWeight:600 }}>🔴 {tr.label}</div>
       )}
 
-      <FieldRow label="USERNAME" value={cred.username} field={cred.username} copyKey="user" />
-      <FieldRow label="PASSWORD" value={showPw ? cred.password : "•".repeat(Math.min((cred.password||"").length, 16))}
-        masked field={cred.password} copyKey="pass" showToggle />
-
-      {hasVerify && (
-        <div style={{ background:"var(--info-bg)", border:"1px solid rgba(96,165,250,0.12)", borderRadius:10, padding:"10px 12px", display:"flex", flexDirection:"column", gap:8 }}>
-          <div style={{ ...microLabel, color:"var(--info)" }}>VERIFICATION</div>
-          {[["📧","Email verification",cred.verifyEmail,"vEmail"],["💬","Text verification",cred.verifyText,"vText"],["🔐","Auth verification",cred.verifyAuth,"vAuth"]]
-            .filter(([,,v])=>v).map(([icon,field,value,key])=>(
-            <div key={key} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-              <code style={monoVal(false)}>{icon} {value}</code>
-              {hasAccess && (
-                <button onClick={()=>handleCopyVerify(value, field, key)} disabled={lockedByTime} style={iconBtn(copied===key, lockedByTime)}>{copied===key?"✓":"📋"}</button>
-              )}
-            </div>
-          ))}
+      {confidentialBlock ? (
+        <div style={{ ...fieldBox, display:"flex", alignItems:"center", gap:10, color:"var(--text-secondary)", fontSize:13, padding:"14px 12px" }}>
+          🔒 This credential is confidential. Contact your admin.
         </div>
-      )}
+      ) : (<>
+        <FieldRow label="USERNAME" value={cred.username} field={cred.username} copyKey="user" />
+        {restrictedPw ? (
+          <div style={fieldBox}>
+            <div style={{ ...microLabel, marginBottom:4 }}>PASSWORD</div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <code style={monoVal(true)}>••••••• Restricted</code>
+              <span style={{ fontSize:11, color:"var(--warning)", fontWeight:600, flexShrink:0 }}>admin only</span>
+            </div>
+          </div>
+        ) : (
+          <FieldRow label="PASSWORD" value={showPw ? cred.password : "•".repeat(Math.min((cred.password||"").length, 16))}
+            masked field={cred.password} copyKey="pass" showToggle />
+        )}
+
+        {hasVerify && (
+          <div style={{ background:"var(--info-bg)", border:"1px solid rgba(96,165,250,0.12)", borderRadius:10, padding:"10px 12px", display:"flex", flexDirection:"column", gap:8 }}>
+            <div style={{ ...microLabel, color:"var(--info)" }}>VERIFICATION</div>
+            {[["📧","Email verification",cred.verifyEmail,"vEmail"],["💬","Text verification",cred.verifyText,"vText"],["🔐","Auth verification",cred.verifyAuth,"vAuth"]]
+              .filter(([,,v])=>v).map(([icon,field,value,key])=>(
+              <div key={key} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+                <code style={monoVal(false)}>{icon} {value}</code>
+                {hasAccess && (
+                  <button onClick={()=>handleCopyVerify(value, field, key)} disabled={lockedByTime} style={{ ...iconBtn(copied===key, lockedByTime), ...(copied===key?{ animation:"ercBounce 0.3s" }:{}) }}>{copied===key?"✓":"📋"}</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </>)}
 
       {/* Footer */}
       <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
@@ -686,12 +957,120 @@ function CollapseHead({ open, onClick, children }) {
   );
 }
 
+// ─── Searchable client select ────────────────────────────────────────────────
+const dropdownPanel = { position:"absolute", top:"calc(100% + 6px)", left:0, zIndex:50, background:"var(--bg-elevated)",
+  border:"1px solid var(--border-default)", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.4)", padding:8, minWidth:240, maxHeight:280, overflowY:"auto" };
+
+function ClientSelect({ clients, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h);
+  }, []);
+  const sel = clients.find(c=>c.id===value);
+  const filtered = clients.filter(c=>!q || c.name.toLowerCase().includes(q.toLowerCase()) || (c.code||"").toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div ref={ref} style={{ position:"relative" }}>
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        style={{ ...S.input(), display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", textAlign:"left" }}>
+        {sel
+          ? <span style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ width:10, height:10, borderRadius:"50%", background:sel.color, flexShrink:0 }} />
+              <span style={{ color:"var(--text-primary)" }}>{sel.name} <span style={{ color:"var(--text-muted)" }}>({sel.code})</span></span>
+            </span>
+          : <span style={{ color:"var(--text-muted)" }}>Select a client…</span>}
+        <span style={{ color:"var(--text-muted)" }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ ...dropdownPanel, right:0 }}>
+          <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Search clients..." style={{ ...S.input(), marginBottom:6, padding:"8px 10px" }} />
+          <div style={{ maxHeight:220, overflowY:"auto" }}>
+            {filtered.length===0
+              ? <div style={{ padding:10, color:"var(--text-muted)", fontSize:13 }}>No active clients — create one in the Clients tab.</div>
+              : filtered.map(c=>(
+                <button key={c.id} type="button" onClick={()=>{ onChange(c.id); setOpen(false); setQ(""); }}
+                  style={{ width:"100%", display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                    border:"none", textAlign:"left", color:"var(--text-primary)", fontSize:13, background:c.id===value?"var(--bg-highlight)":"transparent" }}>
+                  <span style={{ width:10, height:10, borderRadius:"50%", background:c.color, flexShrink:0 }} />
+                  <span style={{ flex:1 }}>{c.name} <span style={{ color:"var(--text-muted)" }}>({c.code})</span></span>
+                  <span style={{ fontSize:10, color:PRIVILEGE_META[c.privilegeLevel].color, fontWeight:700 }}>{PRIVILEGE_META[c.privilegeLevel].label}</span>
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Dark checkbox ────────────────────────────────────────────────────────────
+function DarkCheck({ on }) {
+  return (
+    <span style={{ width:16, height:16, borderRadius:4, flexShrink:0, display:"inline-flex", alignItems:"center", justifyContent:"center",
+      border:"1px solid "+(on?"var(--gold-bright)":"var(--border-strong)"), background:on?"var(--gold-bright)":"transparent", transition:"all .15s ease" }}>
+      {on && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#03070f" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>}
+    </span>
+  );
+}
+
+// ─── Portal multi-select filter ───────────────────────────────────────────────
+function PortalFilter({ portals, creds, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h);
+  }, []);
+  const count = (p) => creds.filter(c=>c.portal===p).length;
+  const filtered = portals.filter(p=>!q||p.toLowerCase().includes(q.toLowerCase()));
+  const active = selected.length>0;
+  const toggle = (p) => onChange(selected.includes(p)?selected.filter(x=>x!==p):[...selected,p]);
+  const label = !active ? "Portal" : (selected.length<=2 ? "Portal: "+selected.join(", ") : `Portal: ${selected.slice(0,2).join(", ")} +${selected.length-2}`);
+  return (
+    <div ref={ref} style={{ position:"relative" }}>
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        style={{ display:"inline-flex", alignItems:"center", gap:8, padding:"8px 14px", fontSize:13, borderRadius:10, cursor:"pointer", fontWeight:600,
+          border:"1px solid "+(active?"var(--gold-bright)":"var(--border-default)"), background:active?"var(--gold-dim)":"rgba(255,255,255,0.05)",
+          color:active?"var(--gold-bright)":"var(--text-secondary)", maxWidth:260, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+        <span style={{ overflow:"hidden", textOverflow:"ellipsis" }}>{label}</span>
+        {active && <span onClick={(e)=>{ e.stopPropagation(); onChange([]); }} style={{ cursor:"pointer" }}>×</span>}
+        <span>▾</span>
+      </button>
+      {open && (
+        <div style={dropdownPanel}>
+          <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Search portals..." style={{ ...S.input(), marginBottom:6, padding:"8px 10px" }} />
+          <div style={{ display:"flex", gap:10, padding:"2px 6px 8px", fontSize:12 }}>
+            <button type="button" onClick={()=>onChange([...new Set([...selected,...filtered])])} style={{ background:"none", border:"none", color:"var(--gold-bright)", cursor:"pointer" }}>Select all</button>
+            <button type="button" onClick={()=>onChange([])} style={{ background:"none", border:"none", color:"var(--text-muted)", cursor:"pointer" }}>Clear</button>
+          </div>
+          <div style={{ maxHeight:200, overflowY:"auto" }}>
+            {filtered.length===0 ? <div style={{ padding:10, color:"var(--text-muted)", fontSize:13 }}>No portals</div>
+              : filtered.map(p=>{ const on=selected.includes(p);
+                return (
+                  <button key={p} type="button" onClick={()=>toggle(p)}
+                    style={{ width:"100%", display:"flex", alignItems:"center", gap:10, padding:"7px 10px", borderRadius:8, cursor:"pointer", border:"none",
+                      textAlign:"left", color:"var(--text-primary)", fontSize:13, background: on?"var(--bg-highlight)":"transparent" }}>
+                    <DarkCheck on={on} />
+                    <span style={{ flex:1 }}>{p}</span>
+                    <span style={{ fontSize:11, color:"var(--text-muted)", background:"rgba(255,255,255,0.05)", borderRadius:20, padding:"1px 7px" }}>{count(p)}</span>
+                  </button>
+                ); })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Credential Modal ─────────────────────────────────────────────────────────
-function CredModal({ cred, onSave, onClose, session }) {
+function CredModal({ cred, onSave, onClose, session, clients }) {
   const [form, setForm] = useState(cred
     ? { verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null, ...cred }
-    : { portal:"", url:"", username:"", password:"", category:"Development",
-        teams:[], passwordExpiryDays:90, needsRotation:false, rotationNote:"", client:"",
+    : { portal:"", url:"", username:"", password:"", clientId:"", clientName:"",
+        teams:[], passwordExpiryDays:90, needsRotation:false, rotationNote:"",
         authMethod:"None", authLocation:"",
         verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null });
   const [teamsAll, setTeamsAll] = useState(!!(cred && cred.teams==="all"));
@@ -703,6 +1082,7 @@ function CredModal({ cred, onSave, onClose, session }) {
   const toggleTeam = t => setSelTeams(p => p.includes(t)?p.filter(x=>x!==t):[...p,t]);
   const ctx = useDepts();
   const deptIds = ctx ? ctx.deptIds : DEFAULT_DEPTS.map(d=>d.id);
+  const activeClients = (clients||[]).filter(c=>c.active);
 
   const tr = form.timeRestriction;
   const trEnabled = !!(tr && tr.enabled);
@@ -724,11 +1104,12 @@ function CredModal({ cred, onSave, onClose, session }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.portal.trim()||!form.username.trim()||!form.password.trim()) return;
+    if (!form.portal.trim()||!form.username.trim()||!form.password.trim()||!form.clientId) return;
     setBusy(true);
     try {
       const timeRestriction = (form.timeRestriction && form.timeRestriction.enabled) ? form.timeRestriction : null;
-      await onSave({ ...form, teams: teamsAll ? "all" : selTeams, timeRestriction });
+      const cl = activeClients.find(c=>c.id===form.clientId);
+      await onSave({ ...form, clientName: cl?cl.name:form.clientName, teams: teamsAll ? "all" : selTeams, timeRestriction });
     } finally { setBusy(false); }
   };
 
@@ -743,11 +1124,10 @@ function CredModal({ cred, onSave, onClose, session }) {
           <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 10px" }}>✕</button>
         </div>
         <form onSubmit={handleSubmit}>
-          {[["Portal Name","portal",true],["URL","url",false],["Client / Company","client",false],["Username","username",true]].map(([lbl,key,req])=>(
+          {[["Portal Name","portal",true],["URL","url",false],["Username","username",true]].map(([lbl,key,req])=>(
             <div key={key} style={{ marginBottom:14 }}>
               <label style={S.label}>{lbl}</label>
-              <input value={form[key]||""} onChange={e=>set(key,e.target.value)} style={S.input()} required={req}
-                placeholder={key==="client"?"e.g. Acme Corp, Internal…":undefined} />
+              <input value={form[key]||""} onChange={e=>set(key,e.target.value)} style={S.input()} required={req} />
             </div>
           ))}
           <div style={{ marginBottom:14 }}>
@@ -756,10 +1136,9 @@ function CredModal({ cred, onSave, onClose, session }) {
             <StrengthBar password={form.password} />
           </div>
           <div style={{ marginBottom:14 }}>
-            <label style={S.label}>Category</label>
-            <select value={form.category||"Development"} onChange={e=>set("category",e.target.value)} style={S.input()}>
-              {["Development","Infrastructure","Design","Marketing","Communication"].map(c=>(<option key={c} value={c}>{c}</option>))}
-            </select>
+            <label style={S.label}>Client</label>
+            <ClientSelect clients={activeClients} value={form.clientId} onChange={(id)=>set("clientId",id)} />
+            {!form.clientId && <p style={{ fontSize:12, color:"var(--text-muted)", margin:"6px 0 0" }}>Required — pick the client this credential belongs to.</p>}
           </div>
 
           <div style={{ marginBottom:14 }}>
@@ -998,56 +1377,132 @@ function RequestAccessModal({ cred, session, onClose, toast, onDone }) {
 }
 
 // ─── Import Preview Modal ─────────────────────────────────────────────────────
-function ImportPreviewModal({ rows, existingCreds, onConfirm, onClose }) {
-  const processed = rows.map(r => {
+function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }) {
+  const activeClients = (clients||[]).filter(c=>c.active);
+  const base = rows.map(r => {
     const errors = [];
     if (!r.Portal) errors.push("Missing Portal");
     if (!r.Username) errors.push("Missing Username");
     if (!r.Password) errors.push("Missing Password");
-    const isDup = existingCreds.some(c=>c.portal===r.Portal);
-    const status = errors.length>0?"error":isDup?"duplicate":"valid";
-    return { ...r, _status:status, _errors:errors };
+    const clientVal = String(r.Client||r["Client Name"]||"").trim();
+    if (!clientVal) errors.push("Missing Client");
+    else if (!activeClients.some(c=>c.name.toLowerCase()===clientVal.toLowerCase())) errors.push(`Unknown client: ${clientVal}. Create this client first.`);
+    // duplicate = portal + username match (case-insensitive)
+    const existing = existingCreds.find(c =>
+      c.portal.toLowerCase()===String(r.Portal||"").toLowerCase() &&
+      c.username.toLowerCase()===String(r.Username||"").toLowerCase());
+    const status = errors.length>0 ? "error" : existing ? "duplicate" : "valid";
+    return { row:r, status, errors, existing };
   });
-  const valid = processed.filter(r=>r._status==="valid").length;
-  const errs = processed.filter(r=>r._status==="error").length;
-  const dups = processed.filter(r=>r._status==="duplicate").length;
+
+  const [decisions, setDecisions] = useState({}); // index -> "overwrite" | "skip" (default skip)
+  const [expanded, setExpanded] = useState({});
+  const decOf = (i) => decisions[i] || "skip";
+  const setDec = (i, v) => setDecisions(d=>({ ...d, [i]:v }));
+  const setAllDup = (v) => { const d={}; base.forEach((b,i)=>{ if(b.status==="duplicate") d[i]=v; }); setDecisions(d); };
+
+  const counts = {
+    nw: base.filter(b=>b.status==="valid").length,
+    overwrite: base.filter((b,i)=>b.status==="duplicate" && decOf(i)==="overwrite").length,
+    skip: base.filter((b,i)=>b.status==="duplicate" && decOf(i)==="skip").length,
+    errors: base.filter(b=>b.status==="error").length,
+  };
+  const totalImport = counts.nw + counts.overwrite;
+
+  const diffFields = (b) => {
+    if (!b.existing) return [];
+    const r=b.row, ex=b.existing;
+    return [
+      ["Password", ex.password, r.Password],
+      ["URL", ex.url, r.URL],
+      ["Client", ex.clientName, (r.Client||r["Client Name"])],
+      ["Teams", (ex.teams==="all"?"all":(ex.teams||[]).join(",")), r.Teams],
+    ].filter(([,o,n]) => n!==undefined && String(o||"")!==String(n||""));
+  };
+
   const pill = (c,label) => <span style={{ background:c+"22", color:c, border:"1px solid "+c+"55", borderRadius:20, padding:"3px 10px", fontSize:12, fontWeight:600 }}>{label}</span>;
+  const td = { padding:"7px 10px", verticalAlign:"top" };
+  const miniBtn = (active, color) => ({ padding:"3px 8px", fontSize:11, fontWeight:600, borderRadius:6, cursor:"pointer",
+    border:"1px solid "+(active?(color||"var(--gold-bright)"):"var(--border-default)"),
+    background:active?hexA(color||"#f5b800",0.15):"transparent", color:active?(color||"var(--gold-bright)"):"var(--text-muted)" });
 
   return (
     <div style={S.overlay}>
-      <div style={{ ...S.modal(), padding:28, width:"95vw", maxWidth:780, maxHeight:"85vh", overflowY:"auto" }}>
+      <div style={{ ...S.modal(), padding:28, width:"95vw", maxWidth:820, maxHeight:"85vh", overflowY:"auto" }}>
         <h3 style={{ fontWeight:700, marginBottom:12, color:"var(--text-primary)", fontSize:18 }}>Import Preview</h3>
-        <div style={{ display:"flex", gap:8, marginBottom:16 }}>
-          {pill("#10b981", `${valid} valid`)}{pill("#ef4444", `${errs} errors`)}{pill("#f59e0b", `${dups} duplicates`)}
+        <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center", flexWrap:"wrap" }}>
+          {pill("#10b981", `${counts.nw} new`)}{pill("#f5b800", `${counts.overwrite} overwrite`)}{pill("#94a3b8", `${counts.skip} skip`)}{pill("#ef4444", `${counts.errors} errors`)}
+          {base.some(b=>b.status==="duplicate") && (
+            <span style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8, fontSize:12, color:"var(--text-muted)" }}>
+              Duplicates:
+              <button onClick={()=>setAllDup("overwrite")} style={miniBtn(false,"#f5b800")}>Overwrite All</button>
+              <button onClick={()=>setAllDup("skip")} style={miniBtn(false)}>Skip All</button>
+            </span>
+          )}
         </div>
-        <div style={{ maxHeight:340, overflowY:"auto", marginBottom:16, border:"1px solid var(--border-subtle)", borderRadius:12 }}>
+        <div style={{ maxHeight:360, overflowY:"auto", marginBottom:16, border:"1px solid var(--border-subtle)", borderRadius:12 }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
-              <tr>{["Status","Portal","URL","Username","Category","Teams"].map(h=>(
+              <tr>{["Decision","Portal","URL","Username","Client","Teams"].map(h=>(
                 <th key={h} style={{ background:"rgba(0,0,0,0.3)", padding:"10px", textAlign:"left", color:"var(--text-muted)",
                   borderBottom:"1px solid var(--border-default)", fontWeight:600, position:"sticky", top:0, textTransform:"uppercase", letterSpacing:1, fontSize:10 }}>{h}</th>
               ))}</tr>
             </thead>
             <tbody>
-              {processed.map((r,i)=>(
-                <tr key={i} style={{ background:r._status==="valid"?"rgba(16,185,129,0.06)":r._status==="error"?"rgba(239,68,68,0.06)":"rgba(245,158,11,0.06)", color:"var(--text-secondary)" }}>
-                  <td style={{ padding:"7px 10px", fontWeight:600, fontStyle:r._status==="error"?"italic":"normal",
-                    color:r._status==="valid"?"var(--success)":r._status==="error"?"#fca5a5":"#fcd34d" }}>
-                    {r._status==="valid"?"● Valid":r._status==="error"?("● "+r._errors.join(",")):"● Will overwrite"}
-                  </td>
-                  <td style={{ padding:"7px 10px" }}>{r.Portal}</td>
-                  <td style={{ padding:"7px 10px" }}>{r.URL}</td>
-                  <td style={{ padding:"7px 10px" }}>{r.Username}</td>
-                  <td style={{ padding:"7px 10px" }}>{r.Category}</td>
-                  <td style={{ padding:"7px 10px" }}>{r.Teams}</td>
-                </tr>
-              ))}
+              {base.map((b,i)=>{
+                const r=b.row; const ov = b.status==="duplicate" && decOf(i)==="overwrite";
+                const bg = b.status==="valid" ? "rgba(16,185,129,0.06)" : b.status==="error" ? "rgba(239,68,68,0.06)" : ov ? "rgba(245,184,0,0.10)" : "rgba(245,158,11,0.06)";
+                return (
+                  <React.Fragment key={i}>
+                    <tr style={{ background:bg, color:"var(--text-secondary)", borderLeft: ov?"2px solid var(--gold-bright)":"2px solid transparent" }}>
+                      <td style={{ ...td, minWidth:170 }}>
+                        {b.status==="valid" && <span style={{ color:"var(--success)", fontWeight:600 }}>✓ New</span>}
+                        {b.status==="error" && <span style={{ color:"#fca5a5", fontStyle:"italic" }}>✕ {b.errors.join(", ")}</span>}
+                        {b.status==="duplicate" && (
+                          <span style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                            <button onClick={()=>setDec(i,"overwrite")} style={miniBtn(decOf(i)==="overwrite","#f5b800")}>Import &amp; Overwrite</button>
+                            <button onClick={()=>setDec(i,"skip")} style={miniBtn(decOf(i)==="skip")}>Skip</button>
+                            <button onClick={()=>setExpanded(e=>({...e,[i]:!e[i]}))} title="Show changes"
+                              style={{ background:"none", border:"none", color:"var(--text-muted)", cursor:"pointer", fontSize:11 }}>{expanded[i]?"▲ diff":"▾ diff"}</button>
+                          </span>
+                        )}
+                      </td>
+                      <td style={td}>{r.Portal}</td>
+                      <td style={td}>{r.URL}</td>
+                      <td style={td}>{r.Username}</td>
+                      <td style={td}>{r.Client||r["Client Name"]}</td>
+                      <td style={td}>{r.Teams}</td>
+                    </tr>
+                    {b.status==="duplicate" && expanded[i] && (
+                      <tr style={{ background:"rgba(0,0,0,0.3)" }}>
+                        <td colSpan={6} style={{ padding:"8px 14px" }}>
+                          {diffFields(b).length===0
+                            ? <span style={{ color:"var(--text-muted)", fontSize:12 }}>No field changes detected.</span>
+                            : <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                                {diffFields(b).map(([f,o,n])=>(
+                                  <div key={f} style={{ fontSize:12 }}>
+                                    <span style={{ color:"var(--text-muted)" }}>{f}: </span>
+                                    <span style={{ color:"#fca5a5", textDecoration:"line-through" }}>{f==="Password"?"••••":(o||"—")}</span>
+                                    <span style={{ color:"var(--text-muted)" }}> → </span>
+                                    <span style={{ color:"var(--success)" }}>{f==="Password"?"••••":(n||"—")}</span>
+                                  </div>
+                                ))}
+                              </div>}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end", alignItems:"center" }}>
           <button onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
-          <button onClick={()=>onConfirm(processed)} className="erc-prim" style={S.btn("primary")}>Import {valid} Valid Row(s)</button>
+          <button onClick={()=>onConfirm(base.map((b,i)=>({ ...b, decision: b.status==="duplicate"?decOf(i):null })))}
+            disabled={totalImport===0} className="erc-prim" style={{ ...S.btn("primary"), opacity:totalImport===0?0.5:1 }}>
+            Import {totalImport} credential{totalImport===1?"":"s"}{counts.overwrite>0?` (${counts.overwrite} will overwrite existing)`:""}
+          </button>
         </div>
       </div>
     </div>
@@ -1103,6 +1558,21 @@ function TwoFASetup({ user, onDone, toast }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Collapsible drawer section ──────────────────────────────────────────────
+function DrawerSection({ title, defaultOpen = true, accent, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ borderBottom:"1px solid var(--border-subtle)", marginBottom:16, paddingBottom:8 }}>
+      <button onClick={()=>setOpen(o=>!o)} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+        background:"none", border:"none", cursor:"pointer", padding:"4px 0", marginBottom:open?12:0 }}>
+        <span style={{ fontWeight:700, color:accent||"var(--text-primary)", fontSize:14 }}>{title}</span>
+        <span style={{ color:"var(--text-muted)", transition:"transform .25s ease", transform:open?"rotate(180deg)":"rotate(0deg)" }}>⌄</span>
+      </button>
+      <div style={{ maxHeight: open ? 2000 : 0, overflow:"hidden", transition:"max-height 0.25s ease" }}>{children}</div>
     </div>
   );
 }
@@ -1170,8 +1640,7 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
       </div>
 
       <div style={{ padding:20, flex:1 }}>
-        <div style={{ marginBottom:8 }}>
-          <h4 style={heading}>Change Password</h4>
+        <DrawerSection title="Change Password">
           {[["Current Password","current"],["New Password","newPw"],["Confirm New","confirm"]].map(([lbl,key])=>(
             <div key={key} style={{ marginBottom:10 }}>
               <label style={S.label}>{lbl}</label>
@@ -1181,11 +1650,9 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
           {cpForm.newPw && <StrengthBar password={cpForm.newPw} />}
           {cpError && <p style={{ color:"#fca5a5", fontSize:13, marginTop:6 }}>{cpError}</p>}
           <button onClick={handleChangePw} disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), marginTop:10, width:"100%", justifyContent:"center", opacity:busy?0.7:1 }}>Update Password</button>
-        </div>
-        <Divider />
+        </DrawerSection>
 
-        <div style={{ marginBottom:8 }}>
-          <h4 style={{ ...heading, color:"var(--text-gold)" }}>📋 Session copy history</h4>
+        <DrawerSection title="📋 Session copy history" accent="var(--text-gold)">
           {copyHistory.length>0 ? copyHistory.map((item,i)=>(
             <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px",
               background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, marginBottom:6, fontSize:13 }}>
@@ -1193,11 +1660,9 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
               <span style={{ color:"var(--text-muted)", fontSize:11 }}>{timeAgo(item.time)}</span>
             </div>
           )) : <p style={{ color:"var(--text-muted)", fontSize:13, fontStyle:"italic" }}>Nothing copied this session</p>}
-        </div>
-        <Divider />
+        </DrawerSection>
 
-        <div style={{ marginBottom:8 }}>
-          <h4 style={heading}>Two-Factor Authentication</h4>
+        <DrawerSection title="Two-Factor Authentication">
           {currentUser.twoFactorEnabled ? (
             <div>
               <div style={{ color:"var(--success)", fontWeight:600, fontSize:13, marginBottom:10 }}>✓ Enabled</div>
@@ -1211,23 +1676,24 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
                 : <button onClick={()=>setSection("2fa")} className="erc-prim" style={S.btn("primary")}>Setup 2FA</button>}
             </div>
           )}
-        </div>
+        </DrawerSection>
 
-        {myRequests.length>0 && (<><Divider /><div>
-          <h4 style={heading}>My Access Requests</h4>
-          {myRequests.map(r=>{
-            const c = r.status==="pending"?"#f59e0b":r.status==="approved"?"#10b981":"#ef4444";
-            return (
-              <div key={r.id} style={{ padding:"10px 12px", background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, marginBottom:8, fontSize:13 }}>
-                <div style={{ fontWeight:600, color:"var(--text-primary)" }}>{r.credentialName}</div>
-                <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
-                  <span style={{ color:"var(--text-muted)" }}>{timeAgo(r.requestedAt)}</span>
-                  <span style={{ padding:"2px 8px", borderRadius:20, fontSize:11, fontWeight:600, background:c+"22", color:c, border:"1px solid "+c+"55" }}>{r.status}</span>
+        {myRequests.length>0 && (
+          <DrawerSection title="My Access Requests">
+            {myRequests.map(r=>{
+              const c = r.status==="pending"?"#f59e0b":r.status==="approved"?"#10b981":"#ef4444";
+              return (
+                <div key={r.id} style={{ padding:"10px 12px", background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, marginBottom:8, fontSize:13 }}>
+                  <div style={{ fontWeight:600, color:"var(--text-primary)" }}>{r.credentialName}</div>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
+                    <span style={{ color:"var(--text-muted)" }}>{timeAgo(r.requestedAt)}</span>
+                    <span style={{ padding:"2px 8px", borderRadius:20, fontSize:11, fontWeight:600, background:c+"22", color:c, border:"1px solid "+c+"55" }}>{r.status}</span>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div></>)}
+              );
+            })}
+          </DrawerSection>
+        )}
       </div>
     </div>
   );
@@ -1237,7 +1703,7 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
 function MatrixView({ creds, toast, onReload }) {
   const ctx = useDepts();
   const teams = ctx ? ctx.deptIds : DEFAULT_DEPTS.map(d=>d.id);
-  const categories = [...new Set(creds.map(c=>c.category))];
+  const groups = [...new Set(creds.map(c=>c.clientName||"—"))];
   const hasTeam = (cred, team) => cred.teams==="all"||(Array.isArray(cred.teams)&&cred.teams.includes(team));
 
   const toggleCell = async (cred, team) => {
@@ -1265,12 +1731,12 @@ function MatrixView({ creds, toast, onReload }) {
             </tr>
           </thead>
           <tbody>
-            {categories.map(cat=>(
-              <React.Fragment key={cat}>
+            {groups.map(grp=>(
+              <React.Fragment key={grp}>
                 <tr>
-                  <td colSpan={teams.length+1} style={{ background:"rgba(0,0,0,0.25)", padding:"6px 14px", fontWeight:700, color:"var(--text-muted)", fontSize:10, letterSpacing:1.5, textTransform:"uppercase" }}>{cat}</td>
+                  <td colSpan={teams.length+1} style={{ background:"rgba(0,0,0,0.25)", padding:"6px 14px", fontWeight:700, color:"var(--text-muted)", fontSize:10, letterSpacing:1.5, textTransform:"uppercase" }}>{grp}</td>
                 </tr>
-                {creds.filter(c=>c.category===cat).map((cred,i)=>(
+                {creds.filter(c=>(c.clientName||"—")===grp).map((cred,i)=>(
                   <tr key={cred.id} className="erc-row" style={{ borderBottom:"1px solid var(--border-subtle)", background:i%2?"rgba(255,255,255,0.02)":"transparent" }}>
                     <td style={{ position:"sticky", left:0, background:"var(--bg-surface)", padding:"10px 14px", borderRight:"1px solid var(--border-subtle)", fontWeight:600, color:"var(--text-primary)" }}>{cred.portal}</td>
                     {teams.map(t=>(
@@ -1298,10 +1764,33 @@ function EmptyState({ icon, title, sub, action }) {
   return (
     <div style={{ ...glass, padding:"48px 24px", textAlign:"center" }}>
       <div style={{ width:72, height:72, borderRadius:"50%", background:"var(--gold-dim)", display:"flex", alignItems:"center",
-        justifyContent:"center", fontSize:34, margin:"0 auto 16px" }}>{icon}</div>
+        justifyContent:"center", fontSize:34, margin:"0 auto 16px", animation:"ercFloatY 3s ease-in-out infinite" }}>{icon}</div>
       <div style={{ fontSize:16, fontWeight:600, color:"var(--text-primary)", marginBottom:6 }}>{title}</div>
       <div style={{ fontSize:13, color:"var(--text-secondary)", marginBottom:action?18:0 }}>{sub}</div>
       {action}
+    </div>
+  );
+}
+
+// ─── Skeleton grid (credentials loading) ─────────────────────────────────────
+function SkeletonGrid() {
+  return (
+    <div className="erc-page">
+      <div style={{ display:"flex", gap:14, marginBottom:24, flexWrap:"wrap" }}>
+        {Array.from({length:4}).map((_,i)=>(
+          <div key={i} className="erc-skel" style={{ flex:1, minWidth:150, height:104, borderRadius:16 }} />
+        ))}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
+        {Array.from({length:6}).map((_,i)=>(
+          <div key={i} style={{ ...S.card(), display:"flex", flexDirection:"column", gap:12 }}>
+            <div className="erc-skel" style={{ height:36, borderRadius:8, width:"60%" }} />
+            <div className="erc-skel" style={{ height:44, borderRadius:8 }} />
+            <div className="erc-skel" style={{ height:44, borderRadius:8 }} />
+            <div className="erc-skel" style={{ height:20, borderRadius:8, width:"40%" }} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1321,6 +1810,9 @@ function Splash({ text }) {
 function StatCard({ icon, val, label, descriptor, accent }) {
   const num = useCountUp(typeof val === "number" ? val : 0);
   const display = typeof val === "number" ? num : val;
+  // stable pseudo-trend for the sparkline (visual only)
+  let seed = 0; for (let i=0;i<label.length;i++) seed = (seed*31 + label.charCodeAt(i)) % 997;
+  const bars = [0,1,2,3].map(i => 8 + ((seed >> (i*2)) % 9) * 2); // 8–24px
   return (
     <div style={{ ...glass, padding:20, flex:1, minWidth:150, position:"relative", overflow:"hidden" }}>
       <div style={{ position:"absolute", left:0, top:12, bottom:12, width:3, borderRadius:3, background:accent }} />
@@ -1328,7 +1820,12 @@ function StatCard({ icon, val, label, descriptor, accent }) {
         <span style={{ fontSize:20 }}>{icon}</span>
         <span style={microLabel}>{label}</span>
       </div>
-      <div style={{ fontSize:36, fontWeight:800, color:"var(--text-primary)", lineHeight:1, paddingLeft:8 }}>{display}</div>
+      <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", paddingLeft:8 }}>
+        <div style={{ fontSize:36, fontWeight:800, color:"var(--text-primary)", lineHeight:1 }}>{display}</div>
+        <div style={{ display:"flex", alignItems:"flex-end", gap:3, height:24 }}>
+          {bars.map((h,i)=><span key={i} style={{ width:4, height:h, borderRadius:2, background:hexA("#f5b800",0.3) }} />)}
+        </div>
+      </div>
       <div style={{ fontSize:12, color:"var(--text-muted)", marginTop:6, paddingLeft:8 }}>{descriptor}</div>
     </div>
   );
@@ -1341,10 +1838,11 @@ const toolbar = { background:"rgba(8,15,30,0.8)", border:"1px solid var(--border
 // ─── Credentials Tab ──────────────────────────────────────────────────────────
 function CredentialsTab({ session, toast }) {
   const [creds, setCreds] = useState([]);
+  const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [catFilter, setCatFilter] = useState("All");
   const [clientFilter, setClientFilter] = useState("All");
+  const [portalFilter, setPortalFilter] = useState([]);
   const [restrictedOnly, setRestrictedOnly] = useState(false);
   const [sort, setSort] = useState("A-Z");
   const [editCred, setEditCred] = useState(null);
@@ -1362,20 +1860,22 @@ function CredentialsTab({ session, toast }) {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, f, r] = await Promise.all([
+      const [c, f, r, cl] = await Promise.all([
         listCredentials(),
         listFavourites(session.userId).catch(()=>[]),
         listRequests().catch(()=>[]),
+        listClients().catch(()=>[]),
       ]);
-      setCreds(c); setFavs(f); setRequests(r);
+      setCreds(c); setFavs(f); setRequests(r); setClients(cl);
     } catch (e) { toast(e.message,"error"); } finally { setLoading(false); }
   }, [session.userId, toast]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
+  const clientsById = useMemo(() => Object.fromEntries(clients.map(c=>[c.id, c])), [clients]);
   const accessible = creds.filter(c=>canAccess(c,session.team));
-  const categories = ["All",...new Set(creds.map(c=>c.category))];
-  const clients = ["All",...[...new Set(creds.map(c=>c.client||"").filter(Boolean))].sort()];
+  const clientNames = ["All",...[...new Set(creds.map(c=>c.clientName||"").filter(Boolean))].sort()];
+  const portalNames = [...new Set(creds.map(c=>c.portal))].sort();
 
   const rotationWarning = (isAdmin?creds:accessible).filter(c=>{
     const age=daysSince(c.updatedAt);
@@ -1390,11 +1890,11 @@ function CredentialsTab({ session, toast }) {
   const filtered = baseList.filter(c=>{
     const q=search.toLowerCase();
     const ms=!search||c.portal.toLowerCase().includes(q)||c.username.toLowerCase().includes(q)||
-      (c.client||"").toLowerCase().includes(q)||(c.authLocation||"").toLowerCase().includes(q)||(c.url||"").toLowerCase().includes(q);
-    const mc=catFilter==="All"||c.category===catFilter;
-    const mcl=clientFilter==="All"||(c.client||"")===clientFilter;
+      (c.clientName||"").toLowerCase().includes(q)||(c.authLocation||"").toLowerCase().includes(q)||(c.url||"").toLowerCase().includes(q);
+    const mcl=clientFilter==="All"||(c.clientName||"")===clientFilter;
+    const mp=portalFilter.length===0||portalFilter.includes(c.portal);
     const mr=!restrictedOnly||(c.timeRestriction&&c.timeRestriction.enabled);
-    return ms&&mc&&mcl&&mr;
+    return ms&&mcl&&mp&&mr;
   }).sort((a,b)=>{
     if(sort==="A-Z") return a.portal.localeCompare(b.portal);
     if(sort==="Newest") return new Date(b.addedAt)-new Date(a.addedAt);
@@ -1449,22 +1949,39 @@ function CredentialsTab({ session, toast }) {
     reader.readAsArrayBuffer(file); e.target.value="";
   };
 
-  const handleImportConfirm = async (processed) => {
-    const valid=processed.filter(r=>r._status==="valid");
-    const newC=valid.map(r=>({
-      portal:r.Portal, url:r.URL||"", client:r.Client||"", username:r.Username||"", password:r.Password||"",
-      category:r.Category||"Development",
+  const parseImportTR = (r) => {
+    const type=String(r["Time Restriction Type"]||"").trim().toLowerCase();
+    if(type==="window") return { enabled:true, type:"window", windowDays:String(r["Window Days"]||"").split(/[,\s]+/).filter(Boolean), windowStart:r["Window Start"]||"09:00", windowEnd:r["Window End"]||"18:00", timezone:"local" };
+    if(type==="expiry") return { enabled:true, type:"expiry", expiryDate:r["Expiry Date"]||"", expiresAt:"" };
+    if(type==="schedule") return { enabled:true, type:"schedule", note:r["Schedule Note"]||"" };
+    return null;
+  };
+  const buildImportRecord = (r) => {
+    const cl=clients.find(x=>x.active && x.name.toLowerCase()===String(r.Client||r["Client Name"]||"").toLowerCase());
+    return {
+      portal:r.Portal, url:r.URL||"", username:r.Username||"", password:r.Password||"",
+      clientId: cl?cl.id:null, clientName: cl?cl.name:String(r.Client||r["Client Name"]||""),
       verifyEmail:r["Verify Email"]||"", verifyText:r["Verify Text"]||"", verifyAuth:r["Verify Auth"]||"",
       teams:r.Teams==="all"?"all":String(r.Teams||"").split(",").map(t=>t.trim()).filter(Boolean),
       passwordExpiryDays:+(r["Expiry Days"])||90, needsRotation:false, rotationNote:"",
-    }));
+      timeRestriction: parseImportTR(r),
+    };
+  };
+  const handleImportConfirm = async (result) => {
+    const inserts = result.filter(b=>b.status==="valid").map(b=>buildImportRecord(b.row));
+    const overwrites = result.filter(b=>b.status==="duplicate" && b.decision==="overwrite");
+    const skipped = result.filter(b=>b.status==="duplicate" && b.decision==="skip").length;
+    const errored = result.filter(b=>b.status==="error").length;
     try {
-      if (newC.length) await bulkCreateCredentials(newC, session.userName);
-      logAudit({ userId:session.userId, userName:session.userName, action:"bulk_import", detail:newC.length+" credentials imported" });
+      if (inserts.length) await bulkCreateCredentials(inserts, session.userName);
+      for (const b of overwrites) {
+        const rec = buildImportRecord(b.row);
+        await updateCredential(b.existing.id, { ...b.existing, ...rec });
+      }
+      if (inserts.length) logAudit({ userId:session.userId, userName:session.userName, action:"bulk_import", detail:inserts.length+" credentials imported" });
+      if (overwrites.length) logAudit({ userId:session.userId, userName:session.userName, action:"bulk_import_overwrite", detail:overwrites.length+" credentials overwritten" });
       setImportRows(null);
-      const sk=processed.filter(r=>r._status==="duplicate").length;
-      const er=processed.filter(r=>r._status==="error").length;
-      toast(newC.length+" imported, "+sk+" skipped, "+er+" errors","success");
+      toast(`✓ ${inserts.length} imported · ${overwrites.length} overwritten · ${skipped} skipped · ${errored} error${errored===1?"":"s"}`,"success");
       await loadAll();
     } catch (e) { toast(e.message,"error"); }
   };
@@ -1481,11 +1998,13 @@ function CredentialsTab({ session, toast }) {
     };
     const trActive = (c)=>{ const st=evalTimeRestriction(c.timeRestriction).state;
       if(st==="none") return ""; return (st==="active"||st==="schedule"||st==="expiring")?"Yes":"No"; };
-    const h=["Portal","URL","Client","Username","Password","Verify Email","Verify Text","Verify Auth","Category","Teams","Expiry Days","Days Since Updated","Needs Rotation","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
-    const rows=all.map(c=>[c.portal,c.url,c.client||"",c.username,c.password,
-      c.verifyEmail||"",c.verifyText||"",c.verifyAuth||"",c.category,
-      c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",
-      trType(c),trDetails(c),trActive(c),c.addedBy,c.addedAt]);
+    const h=["Portal","URL","Username","Password","Client Name","Client Code","Privilege Level","Verify Email","Verify Text","Verify Auth","Teams","Expiry Days","Days Since Updated","Needs Rotation","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
+    const rows=all.map(c=>{ const cl=clientsById[c.clientId];
+      return [c.portal,c.url,c.username,c.password,
+        c.clientName||(cl?cl.name:""), cl?cl.code:"", cl?cl.privilegeLevel:"",
+        c.verifyEmail||"",c.verifyText||"",c.verifyAuth||"",
+        c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",
+        trType(c),trDetails(c),trActive(c),c.addedBy,c.addedAt]; });
     const ws1=XLSX.utils.aoa_to_sheet([h,...rows]); ws1["!cols"]=h.map(()=>({wch:20}));
     const teams=dctx?dctx.deptIds:DEFAULT_DEPTS.map(d=>d.id);
     const mh=["Credential",...teams];
@@ -1497,21 +2016,27 @@ function CredentialsTab({ session, toast }) {
   };
 
   const handleTemplate = () => {
-    const h=["Portal","URL","Client","Username","Password","Verify Email","Verify Text","Verify Auth","Category","Teams","Expiry Days"];
+    const h=["Portal Name","URL","Username","Password","Client Name","Teams","Expiry Days","Verify Email","Verify Text","Verify Auth","Time Restriction Type","Window Days","Window Start","Window End","Expiry Date","Schedule Note"];
     const ex=[
-      ["GitHub","github.com","Acme Corp","user@example.com","password123","","","Engineering Authy (shared)","Development","engineering",90],
-      ["Figma","figma.com","Bright Agency","design@co.com","figpass","design@co.com inbox","","","Design","design,marketing",60],
-      ["Notion","notion.so","Internal","team@co.com","notionpw","","+1 (555) 000-0000","","Communication","all",90],
+      ["GitHub","github.com","org-dev-team","ghp_xxx","TechCorp Solutions","engineering",90,"","","Engineering Authy","window","Mon Tue Wed Thu Fri","09:00","18:00","",""],
+      ["Figma","figma.com","design@co.com","figpass","Bright Agency","design,marketing",60,"design@co.com inbox","","","","","","","",""],
+      ["Notion","notion.so","team@co.com","notionpw","Internal","all",90,"","+1 (555) 000-0000","","","","","","",""],
     ];
-    const ws=XLSX.utils.aoa_to_sheet([h,...ex]); ws["!cols"]=h.map(()=>({wch:22}));
-    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Template");
+    const ws=XLSX.utils.aoa_to_sheet([h,...ex]); ws["!cols"]=h.map(()=>({wch:20}));
+    const info=XLSX.utils.aoa_to_sheet([
+      ["Eagle RCM — import instructions"],
+      ["Duplicate detection: portal + username match triggers an overwrite prompt."],
+      ["Client Name must match an existing active client exactly."],
+      ["Time Restriction Type: window | expiry | schedule (leave blank for none)."],
+    ]);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Template"); XLSX.utils.book_append_sheet(wb,info,"Instructions");
     XLSX.writeFile(wb,"EagleRCM-Template.xlsx"); toast("Template downloaded!","success");
   };
 
   const stats = {
     accessible: accessible.length,
-    categories: new Set(accessible.map(c=>c.category)).size,
-    clientsCount: new Set(creds.map(c=>c.client||"").filter(Boolean)).size,
+    clientsCount: new Set(creds.map(c=>c.clientName||"").filter(Boolean)).size,
     restricted: restrictedCount,
     team: accessible.filter(c=>c.teams!=="all"&&Array.isArray(c.teams)&&c.teams.includes(session.team)).length,
     total: creds.length,
@@ -1521,7 +2046,7 @@ function CredentialsTab({ session, toast }) {
     border:"1px solid "+(active?"var(--gold-bright)":"var(--border-default)"), background:active?"var(--gold-dim)":"transparent",
     color:active?"var(--gold-bright)":"var(--text-secondary)", transition:"all .15s ease" });
 
-  if (loading) return <Splash text="Loading credentials…" />;
+  if (loading) return <SkeletonGrid />;
 
   return (
     <div className="erc-page">
@@ -1541,7 +2066,6 @@ function CredentialsTab({ session, toast }) {
 
       <div style={{ display:"flex", gap:14, marginBottom:24, flexWrap:"wrap" }}>
         <StatCard icon="🔑" val={stats.accessible} label="Accessible" descriptor="credentials you can use" accent="var(--gold-bright)" />
-        <StatCard icon="📂" val={stats.categories} label="Categories" descriptor="distinct types" accent="var(--info)" />
         <StatCard icon="🏢" val={stats.clientsCount} label="Clients" descriptor="organisations" accent="#a78bfa" />
         <StatCard icon="⏰" val={stats.restricted} label="Restricted" descriptor="time-limited now" accent="var(--danger)" />
         <StatCard icon="👥" val={stats.team} label={"Team · "+session.team} descriptor="team-scoped" accent={(dctx?dctx.teamStyle(session.team):(TEAM_STYLES[session.team]||TEAM_STYLES.engineering)).color} />
@@ -1555,7 +2079,7 @@ function CredentialsTab({ session, toast }) {
             {recentViewed.map(c=>(
               <div key={c.id} className="erc-card" style={{ ...glass, height:44, display:"flex", alignItems:"center", gap:8, padding:"0 14px",
                 whiteSpace:"nowrap", fontSize:13, fontWeight:600, color:"var(--text-primary)", flexShrink:0 }}>
-                {CAT_ICONS[c.category]||"🔑"} {c.portal} <span style={{ color:"var(--text-muted)", fontWeight:400 }}>· {timeAgo(c.updatedAt)}</span>
+                🔑 {c.portal} <span style={{ color:"var(--text-muted)", fontWeight:400 }}>· {timeAgo(c.updatedAt)}</span>
               </div>
             ))}
           </div>
@@ -1569,7 +2093,7 @@ function CredentialsTab({ session, toast }) {
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
             {pinned.map((c,i)=>(
-              <CredentialCard key={c.id} index={i} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
+              <CredentialCard key={c.id} index={i} cred={c} session={session} client={clientsById[c.clientId]} onEdit={setEditCred} onDelete={setDeleteCredState}
                 onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={true} requests={requests}
                 onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
             ))}
@@ -1586,6 +2110,7 @@ function CredentialsTab({ session, toast }) {
         <select value={sort} onChange={e=>setSort(e.target.value)} style={{ ...S.input(), width:"auto" }}>
           {["A-Z","Newest","Oldest","Expiring Soon"].map(s=><option key={s}>{s}</option>)}
         </select>
+        <PortalFilter portals={portalNames} creds={baseList} selected={portalFilter} onChange={setPortalFilter} />
         <button onClick={()=>setRestrictedOnly(v=>!v)} style={catPill(restrictedOnly)}>⏰ Time-Restricted</button>
         {isAdmin && (
           <div style={{ display:"flex", gap:8, marginLeft:"auto", flexWrap:"wrap" }}>
@@ -1599,29 +2124,24 @@ function CredentialsTab({ session, toast }) {
         )}
       </div>
 
-      <div style={{ display:"flex", gap:8, marginBottom:10, flexWrap:"wrap", alignItems:"center" }}>
-        <span style={microLabel}>Category</span>
-        {categories.map(c=>(<button key={c} className="erc-pill" onClick={()=>setCatFilter(c)} style={catPill(catFilter===c)}>{c}</button>))}
-      </div>
-
-      {clients.length>1 && (
+      {clientNames.length>1 && (
         <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap", alignItems:"center" }}>
           <span style={microLabel}>Client</span>
-          {clients.map(cl=>(<button key={cl} className="erc-pill" onClick={()=>setClientFilter(cl)} style={catPill(clientFilter===cl)}>{cl==="All"?"All Clients":"🏢 "+cl}</button>))}
+          {clientNames.map(cl=>(<button key={cl} className="erc-pill" onClick={()=>setClientFilter(cl)} style={catPill(clientFilter===cl)}>{cl==="All"?"All Clients":"🏢 "+cl}</button>))}
         </div>
       )}
 
       <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14 }}>{filtered.length} credential(s) found</div>
 
       {filtered.length===0 ? (
-        search||catFilter!=="All"||clientFilter!=="All"||restrictedOnly
+        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly
           ? <EmptyState icon="🔍" title="Nothing matched" sub="Try different search terms or clear filters" />
           : <EmptyState icon="🔑" title="No credentials yet" sub="Add your first credential to get started"
               action={isAdmin && <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>} />
       ) : (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
           {unpinned.map((c,i)=>(
-            <CredentialCard key={c.id} index={i} cred={c} session={session} onEdit={setEditCred} onDelete={setDeleteCredState}
+            <CredentialCard key={c.id} index={i} cred={c} session={session} client={clientsById[c.clientId]} onEdit={setEditCred} onDelete={setDeleteCredState}
               onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={false} requests={requests}
               onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
           ))}
@@ -1629,7 +2149,7 @@ function CredentialsTab({ session, toast }) {
       )}
 
       {(editCred||showAdd) && (
-        <CredModal cred={editCred} onSave={handleSave} onClose={()=>{ setEditCred(null); setShowAdd(false); }} session={session} />
+        <CredModal cred={editCred} onSave={handleSave} onClose={()=>{ setEditCred(null); setShowAdd(false); }} session={session} clients={clients} />
       )}
       {deleteCredState && (
         <div style={S.overlay}>
@@ -1648,17 +2168,211 @@ function CredentialsTab({ session, toast }) {
         <RequestAccessModal cred={requestCred} session={session} onClose={()=>setRequestCred(null)} toast={toast} onDone={loadAll} />
       )}
       {importRows && (
-        <ImportPreviewModal rows={importRows} existingCreds={creds} onConfirm={handleImportConfirm} onClose={()=>setImportRows(null)} />
+        <ImportPreviewModal rows={importRows} existingCreds={creds} clients={clients} onConfirm={handleImportConfirm} onClose={()=>setImportRows(null)} />
+      )}
+    </div>
+  );
+}
+
+// ─── Client Modal ─────────────────────────────────────────────────────────────
+function ClientModal({ client, onSave, onClose }) {
+  const ctx = useDepts();
+  const deptList = ctx ? ctx.list : DEFAULT_DEPTS;
+  const [form, setForm] = useState(client
+    ? { ...client }
+    : { name:"", code:"", color:CLIENT_PALETTE[0], privilegeLevel:"standard", allowedTeams:[], description:"", active:true });
+  const [codeEdited, setCodeEdited] = useState(!!client);
+  const [busy, setBusy] = useState(false);
+  const set = (k,v) => setForm(p=>({...p,[k]:v}));
+  const onName = (v) => setForm(p=>({ ...p, name:v, code: codeEdited?p.code:autoCode(v) }));
+  const toggleTeam = (t) => setForm(p=>({ ...p, allowedTeams: p.allowedTeams.includes(t)?p.allowedTeams.filter(x=>x!==t):[...p.allowedTeams,t] }));
+  const submit = async (e) => { e.preventDefault(); if(!form.name.trim()) return; setBusy(true);
+    try { await onSave({ ...form, code: (form.code||autoCode(form.name)).toUpperCase() }); } finally { setBusy(false); } };
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ ...S.modal(), padding:28, width:"90%", maxWidth:520, maxHeight:"85vh", overflowY:"auto" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+          <h3 style={{ fontWeight:700, fontSize:18, color:"var(--text-primary)" }}>{client?"Edit Client":"Add Client"}</h3>
+          <button onClick={onClose} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 10px" }}>✕</button>
+        </div>
+        <form onSubmit={submit}>
+          <div style={{ display:"flex", gap:12, marginBottom:14 }}>
+            <div style={{ flex:1 }}>
+              <label style={S.label}>Client Name</label>
+              <input value={form.name} onChange={e=>onName(e.target.value)} style={S.input()} required />
+            </div>
+            <div style={{ width:120 }}>
+              <label style={S.label}>Code</label>
+              <input value={form.code} onChange={e=>{ setCodeEdited(true); set("code",e.target.value.toUpperCase().slice(0,5)); }} style={{ ...S.input(), fontFamily:"var(--font-mono)" }} />
+            </div>
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Colour</label>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              {CLIENT_PALETTE.map(c=>(
+                <button key={c} type="button" onClick={()=>set("color",c)} title={c}
+                  style={{ width:26, height:26, borderRadius:"50%", background:c, cursor:"pointer", border:form.color===c?"2px solid #fff":"2px solid transparent" }} />
+              ))}
+            </div>
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Privilege Level</label>
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {Object.entries(PRIVILEGE_META).map(([key,m])=>{ const on=form.privilegeLevel===key;
+                return (
+                  <button key={key} type="button" onClick={()=>set("privilegeLevel",key)}
+                    style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", borderRadius:10, cursor:"pointer", textAlign:"left",
+                      border:"1px solid "+(on?m.color:"var(--border-default)"), background:on?hexA(m.color,0.12):"rgba(0,0,0,0.25)" }}>
+                    <span style={{ marginTop:2, color:m.color }}>{on?"●":"○"}</span>
+                    <span>
+                      <span style={{ fontSize:13, fontWeight:700, color:on?m.color:"var(--text-primary)" }}>{m.label}</span>
+                      <span style={{ fontSize:12, color:"var(--text-muted)", display:"block" }}>{m.desc}</span>
+                    </span>
+                  </button>
+                ); })}
+            </div>
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Allowed Teams</label>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              {deptList.map(d=>{ const on=form.allowedTeams.includes(d.id);
+                return (
+                  <label key={d.id} style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", padding:"5px 12px", textTransform:"capitalize",
+                    border:"1px solid "+(on?"var(--info)":"var(--border-default)"), borderRadius:20, fontSize:12,
+                    background:on?"var(--info-bg)":"rgba(0,0,0,0.3)", color:on?"var(--info)":"var(--text-secondary)" }}>
+                    <input type="checkbox" checked={on} onChange={()=>toggleTeam(d.id)} style={{ display:"none" }} />{d.label}
+                  </label>
+                ); })}
+            </div>
+            {form.privilegeLevel==="confidential" && <p style={{ fontSize:12, color:"var(--text-muted)", margin:"6px 0 0" }}>Confidential clients are admin-only regardless of allowed teams.</p>}
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Description</label>
+            <textarea value={form.description} onChange={e=>set("description",e.target.value)} style={{ ...S.input(), resize:"vertical", minHeight:64 }} placeholder="What this client covers…" />
+          </div>
+          <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:13, color:"var(--text-secondary)", marginBottom:20 }}>
+            <input type="checkbox" checked={form.active} onChange={e=>set("active",e.target.checked)} /> Active (selectable for new credentials)
+          </label>
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+            <button type="button" onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
+            <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>{client?"Save Changes":"Add Client"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Clients Tab (admin) ──────────────────────────────────────────────────────
+function ClientsTab({ session, toast }) {
+  const [clients, setClients] = useState([]);
+  const [creds, setCreds] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [privFilter, setPrivFilter] = useState("All");
+  const [showAdd, setShowAdd] = useState(false);
+  const [editClient, setEditClient] = useState(null);
+
+  const load = useCallback(async () => {
+    try { const [cl,cr] = await Promise.all([listClients(), listCredentials()]); setClients(cl); setCreds(cr); }
+    catch (e) { toast(e.message,"error"); } finally { setLoading(false); }
+  }, [toast]);
+  useEffect(() => { load(); }, [load]);
+
+  const credCount = (id) => creds.filter(c=>c.clientId===id).length;
+  const filtered = clients.filter(c =>
+    (!search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.code||"").toLowerCase().includes(search.toLowerCase())) &&
+    (privFilter==="All" || c.privilegeLevel===privFilter));
+
+  const handleSave = async (c) => {
+    try {
+      if (c.id) { await updateClient(c.id, c); logAudit({ userId:session.userId, userName:session.userName, action:"client_edited", detail:c.name }); toast("Client saved","success"); }
+      else { await createClient(c, session.userName); logAudit({ userId:session.userId, userName:session.userName, action:"client_created", detail:c.name }); toast("Client created","success"); }
+      setShowAdd(false); setEditClient(null); await load();
+    } catch (e) { toast(e.message && e.message.includes("does not exist") ? "Run migration_4_clients.sql in Supabase first." : e.message, "error"); }
+  };
+  const handleArchive = async (c) => {
+    try { await archiveClient(c.id, !c.active); logAudit({ userId:session.userId, userName:session.userName, action:"client_archived", detail:c.name }); toast(c.active?"Client archived":"Client restored","info"); await load(); }
+    catch (e) { toast(e.message,"error"); }
+  };
+
+  const privPill = (active, color) => ({ padding:"6px 14px", fontSize:13, borderRadius:20, cursor:"pointer", fontWeight: active?600:500,
+    border:"1px solid "+(active?(color||"var(--gold-bright)"):"var(--border-default)"), background:active?hexA(color||"#f5b800",0.15):"transparent",
+    color:active?(color||"var(--gold-bright)"):"var(--text-secondary)" });
+
+  if (loading) return <Splash text="Loading clients…" />;
+
+  return (
+    <div className="erc-page">
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:10 }}>
+        <div style={{ fontWeight:700, color:"var(--text-primary)", fontSize:20 }}>
+          Clients <span style={{ color:"var(--text-muted)", fontSize:14, fontWeight:400 }}>({clients.length})</span>
+        </div>
+        <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Client</button>
+      </div>
+
+      <div style={toolbar}>
+        <div style={{ position:"relative", flex:1, minWidth:220, maxWidth:320 }}>
+          <span style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", color:"var(--text-muted)" }}>🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} style={{ ...S.input(), padding:"10px 36px" }} placeholder="Search clients..." />
+        </div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          <button onClick={()=>setPrivFilter("All")} style={privPill(privFilter==="All")}>All</button>
+          {Object.entries(PRIVILEGE_META).map(([k,m])=>(<button key={k} onClick={()=>setPrivFilter(k)} style={privPill(privFilter===k,m.color)}>{m.label}</button>))}
+        </div>
+      </div>
+
+      {filtered.length===0 ? (
+        <EmptyState icon="🏢" title="No clients yet" sub="Add your first client to start tagging credentials"
+          action={<button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Client</button>} />
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))", gap:16 }}>
+          {filtered.map((c,i)=>{ const pm=PRIVILEGE_META[c.privilegeLevel];
+            return (
+              <div key={c.id} className="erc-card" style={{ ...S.card(), opacity:c.active?1:0.6, animation:"ercCardIn 0.3s ease-out both", animationDelay:`${i*40}ms` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
+                  <span style={{ width:48, height:48, borderRadius:"50%", background:hexA(c.color,0.2), border:"2px solid "+c.color, flexShrink:0 }} />
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      <span style={{ fontWeight:700, fontSize:16, color:"var(--text-primary)" }}>{c.name}</span>
+                      <span style={{ fontFamily:"var(--font-mono)", fontSize:11, color:"var(--text-muted)", background:"rgba(255,255,255,0.05)", borderRadius:6, padding:"1px 6px" }}>{c.code}</span>
+                    </div>
+                    <div style={{ marginTop:4 }}>
+                      <span style={{ background:hexA(pm.color,0.15), color:pm.color, border:"1px solid "+hexA(pm.color,0.4), borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:700 }}>{pm.label}</span>
+                      {!c.active && <span style={{ marginLeft:6, fontSize:11, color:"var(--text-muted)" }}>· Archived</span>}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ ...microLabel, marginBottom:6 }}>Allowed teams</div>
+                <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:12, minHeight:22 }}>
+                  {c.allowedTeams.length ? c.allowedTeams.map(t=><TeamBadge key={t} team={t} small />) : <span style={{ fontSize:12, color:"var(--text-muted)" }}>{c.privilegeLevel==="confidential"?"Admin only":"None"}</span>}
+                </div>
+                {c.description && <p style={{ fontSize:13, color:"var(--text-secondary)", marginBottom:12, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" }}>{c.description}</p>}
+                <div style={{ fontSize:12, color:"var(--text-muted)", marginBottom:12 }}>{credCount(c.id)} credential(s) tagged</div>
+                <div style={{ display:"flex", gap:6, paddingTop:10, borderTop:"1px solid var(--border-subtle)" }}>
+                  <button onClick={()=>setEditClient(c)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 12px", fontSize:12 }}>Edit</button>
+                  <button onClick={()=>handleArchive(c)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 12px", fontSize:12 }}>{c.active?"Archive":"Restore"}</button>
+                </div>
+              </div>
+            ); })}
+        </div>
+      )}
+
+      {(showAdd||editClient) && (
+        <ClientModal client={editClient} onSave={handleSave} onClose={()=>{ setShowAdd(false); setEditClient(null); }} />
       )}
     </div>
   );
 }
 
 // ─── Users Tab ────────────────────────────────────────────────────────────────
-function UsersTab({ session, toast }) {
+function UsersTab({ session, toast, onPendingChange }) {
   const ctx = useDepts();
   const [users, setUsers] = useState([]);
   const [creds, setCreds] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [pendingRegs, setPendingRegs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [teamFilter, setTeamFilter] = useState("All");
@@ -1667,19 +2381,56 @@ function UsersTab({ session, toast }) {
   const [resetUser, setResetUser] = useState(null);
   const [matrixView, setMatrixView] = useState(false);
   const [showDepts, setShowDepts] = useState(false);
+  const [showGenerate, setShowGenerate] = useState(false);
+  const [rejectReg, setRejectReg] = useState(null);
+  const [approveReg, setApproveReg] = useState(null);
+  const [showResolved, setShowResolved] = useState(false);
 
   const loadAll = useCallback(async () => {
-    try { const [u,c] = await Promise.all([listUsers(), listCredentials()]); setUsers(u); setCreds(c); }
-    catch (e) { toast(e.message,"error"); } finally { setLoading(false); }
+    try {
+      const [u,c,inv,reg] = await Promise.all([
+        listUsers(), listCredentials(),
+        listInviteTokens().catch(()=>[]), listPendingRegistrations().catch(()=>[]),
+      ]);
+      setUsers(u); setCreds(c); setInvites(inv); setPendingRegs(reg);
+    } catch (e) { toast(e.message,"error"); } finally { setLoading(false); }
   }, [toast]);
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  const adminCount = users.filter(u=>u.team==="admin").length;
+  const adminCount = users.filter(u=>u.team==="admin" && u.active!==false).length;
   const filtered = users.filter(u=>{
+    if (u.active===false) return false; // pending/inactive shown in Registrations section
     const ms=!search||u.name.toLowerCase().includes(search.toLowerCase())||u.username.toLowerCase().includes(search.toLowerCase());
     const mt=teamFilter==="All"||u.team===teamFilter;
     return ms&&mt;
   });
+
+  const pendingRegList = pendingRegs.filter(r=>r.status==="pending");
+  const resolvedRegList = pendingRegs.filter(r=>r.status!=="pending");
+
+  const handleApprove = async (reg, team) => {
+    try {
+      await approveRegistration(reg, team, session.userName);
+      logAudit({ userId:session.userId, userName:session.userName, action:"user_approved_registration", detail:reg.fullName+" ("+reg.username+")" });
+      toast(reg.fullName+" approved","success"); setApproveReg(null); await loadAll(); onPendingChange && onPendingChange();
+    } catch (e) { toast(e.message,"error"); }
+  };
+  const handleReject = async (reg, reason) => {
+    try {
+      await rejectRegistration(reg, reason, session.userName);
+      logAudit({ userId:session.userId, userName:session.userName, action:"user_rejected_registration", detail:reg.fullName+" ("+reg.username+")" });
+      toast(reg.fullName+" rejected","info"); await loadAll(); onPendingChange && onPendingChange();
+    } catch (e) { toast(e.message,"error"); }
+  };
+  const handleRevoke = async (inv) => {
+    try { await revokeInviteToken(inv.id); toast("Invite revoked","info"); await loadAll(); } catch (e) { toast(e.message,"error"); }
+  };
+  const copyInvite = (inv) => { navigator.clipboard.writeText(`${window.location.origin}?invite=${inv.token}`).then(()=>toast("Link copied","success")); };
+  const inviteStatus = (inv) => {
+    if (!inv.active) return inv.usedCount>=inv.maxUses ? { t:"Used", c:"#94a3b8" } : { t:"Revoked", c:"#94a3b8" };
+    if (inv.expiresAt && new Date(inv.expiresAt) < new Date()) return { t:"Expired", c:"#ef4444" };
+    return { t:"Active", c:"#10b981" };
+  };
 
   const handleSave = async (form) => {
     try {
@@ -1785,6 +2536,76 @@ function UsersTab({ session, toast }) {
         </>
       )}
 
+      {/* Invite Links */}
+      <div style={{ marginTop:28 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:10 }}>
+          <h3 style={{ fontWeight:700, color:"var(--text-primary)", fontSize:18 }}>Invite Links</h3>
+          <button onClick={()=>setShowGenerate(true)} className="erc-prim" style={S.btn("primary")}>+ Generate Invite Link</button>
+        </div>
+        {invites.length===0
+          ? <div style={{ ...glass, padding:20, color:"var(--text-muted)", fontSize:13 }}>No invite links yet.</div>
+          : <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {invites.map(inv=>{ const s=inviteStatus(inv);
+                const hrsLeft = inv.expiresAt ? Math.max(0, Math.round((new Date(inv.expiresAt)-Date.now())/3600000)) : null;
+                return (
+                  <div key={inv.id} style={{ ...glass, padding:"12px 16px", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap", opacity:s.t==="Active"?1:0.6 }}>
+                    <div style={{ flex:1, minWidth:160 }}>
+                      <div style={{ color:"var(--text-primary)", fontWeight:600, fontSize:14 }}>{inv.label||"(no label)"}</div>
+                      <div style={{ color:"var(--text-muted)", fontSize:12 }}>
+                        {inv.allowedTeam ? (ctx?ctx.teamLabel(inv.allowedTeam):inv.allowedTeam) : "Team on approval"} · {hrsLeft!==null?`expires in ${hrsLeft}h`:"no expiry"} · uses {inv.usedCount}/{inv.maxUses}
+                      </div>
+                    </div>
+                    <span style={{ background:s.c+"22", color:s.c, border:"1px solid "+s.c+"55", borderRadius:20, padding:"2px 10px", fontSize:11, fontWeight:600 }}>{s.t}</span>
+                    <button onClick={()=>copyInvite(inv)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>Copy Link</button>
+                    {inv.active && <button onClick={()=>handleRevoke(inv)} style={{ ...S.btn("danger"), padding:"5px 10px", fontSize:12 }}>Revoke</button>}
+                  </div>
+                ); })}
+            </div>}
+      </div>
+
+      {/* Pending Registrations */}
+      <div style={{ marginTop:28 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+          <h3 style={{ fontWeight:700, color:"var(--text-primary)", fontSize:18 }}>Pending Registrations</h3>
+          {pendingRegList.length>0 && <span style={{ background:"var(--gold-dim)", color:"var(--gold-bright)", borderRadius:20, padding:"1px 9px", fontSize:12, fontWeight:700 }}>{pendingRegList.length}</span>}
+        </div>
+        {pendingRegList.length===0
+          ? <div style={{ ...glass, padding:20, color:"var(--text-muted)", fontSize:13 }}>No pending registrations.</div>
+          : <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {pendingRegList.map(reg=>(
+                <div key={reg.id} style={{ ...glass, padding:"12px 16px", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+                  <div style={{ flex:1, minWidth:160 }}>
+                    <div style={{ color:"var(--text-primary)", fontWeight:600 }}>{reg.fullName} <span style={{ color:"var(--text-muted)", fontWeight:400, fontFamily:"var(--font-mono)", fontSize:13 }}>@{reg.username}</span></div>
+                    <div style={{ color:"var(--text-muted)", fontSize:12 }}>Requested: {reg.requestedTeam?(ctx?ctx.teamLabel(reg.requestedTeam):reg.requestedTeam):"—"} · {timeAgo(reg.submittedAt)}</div>
+                  </div>
+                  <button onClick={()=>setApproveReg(reg)} className="erc-prim" style={{ ...S.btn("primary"), padding:"6px 14px", fontSize:13 }}>Approve</button>
+                  <button onClick={()=>setRejectReg(reg)} style={{ ...S.btn("danger"), padding:"6px 14px", fontSize:13 }}>Reject</button>
+                </div>
+              ))}
+            </div>}
+        {resolvedRegList.length>0 && (
+          <div style={{ marginTop:12 }}>
+            <button onClick={()=>setShowResolved(s=>!s)} style={{ background:"none", border:"none", color:"var(--text-secondary)", cursor:"pointer", fontSize:13, display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ transform:showResolved?"rotate(180deg)":"none", transition:"transform .2s" }}>⌄</span> Previous requests ({resolvedRegList.length})
+            </button>
+            {showResolved && <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:8 }}>
+              {resolvedRegList.map(reg=>{ const c=reg.status==="approved"?"#10b981":"#ef4444";
+                return (
+                  <div key={reg.id} style={{ ...glass, padding:"10px 14px", display:"flex", alignItems:"center", gap:10, fontSize:13, opacity:0.7 }}>
+                    <span style={{ color:"var(--text-primary)", flex:1 }}>{reg.fullName} <span style={{ color:"var(--text-muted)" }}>@{reg.username}</span></span>
+                    <span style={{ background:c+"22", color:c, border:"1px solid "+c+"55", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>{reg.status}</span>
+                    {reg.reviewedBy && <span style={{ color:"var(--text-muted)", fontSize:11 }}>by {reg.reviewedBy}</span>}
+                  </div>
+                ); })}
+            </div>}
+          </div>
+        )}
+      </div>
+
+      {showGenerate && <GenerateInviteModal createdBy={session.userName} onClose={()=>setShowGenerate(false)} onCreated={loadAll} toast={toast} />}
+      {rejectReg && <RejectModal reg={rejectReg} onClose={()=>setRejectReg(null)} onSubmit={(reason)=>handleReject(rejectReg, reason)} />}
+      {approveReg && <ApproveRegModal reg={approveReg} onClose={()=>setApproveReg(null)} onConfirm={(team)=>handleApprove(approveReg, team)} />}
+
       {(showAdd||editUser) && (
         <UserModal user={editUser} onSave={handleSave} onClose={()=>{ setShowAdd(false); setEditUser(null); }} />
       )}
@@ -1884,10 +2705,10 @@ function AuditTab({ session, toast }) {
   useEffect(() => { listAudit().then(setAudit).catch(e=>toast(e.message,"error")).finally(()=>setLoading(false)); }, [toast]);
 
   const actionColors = {
-    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981",
+    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981", client_created:"#10b981", user_approved_registration:"#10b981",
     login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa",
-    edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b",
-    delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444",
+    edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b", client_edited:"#f59e0b", bulk_import_overwrite:"#f59e0b",
+    delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444", client_archived:"#ef4444", user_rejected_registration:"#ef4444",
   };
   const dateMs = { Today:86400000, "7d":7*86400000, "30d":30*86400000, All:Infinity };
   const now = Date.now();
@@ -2049,6 +2870,8 @@ function Dashboard({ user, onLogout }) {
   const [countdown, setCountdown] = useState(60);
   const [copyHistory, setCopyHistory] = useState([]);
   const [pendingCount, setPendingCount] = useState(0);
+  const [pendingRegCount, setPendingRegCount] = useState(0);
+  const [showBell, setShowBell] = useState(false);
   const [toasts, toast] = useToast();
   const lastActivity = useRef(Date.now());
   const warningShown = useRef(false);
@@ -2075,6 +2898,7 @@ function Dashboard({ user, onLogout }) {
   const refreshPending = useCallback(() => {
     if (!isAdmin) return;
     listRequests().then(rs => setPendingCount(rs.filter(r=>r.status==="pending").length)).catch(()=>{});
+    listPendingRegistrations().then(rs => setPendingRegCount(rs.filter(r=>r.status==="pending").length)).catch(()=>{});
   }, [isAdmin]);
   useEffect(() => { refreshPending(); }, [refreshPending, tab]);
 
@@ -2099,8 +2923,15 @@ function Dashboard({ user, onLogout }) {
     return () => clearInterval(iv);
   }, [onLogout]);
 
-  const TABS = isAdmin ? ["credentials","users","audit","requests"] : ["credentials"];
-  const TAB_LABELS = { credentials:"Credentials", users:"Users", audit:"Audit Log", requests:"Access Requests" };
+  const TABS = isAdmin ? ["credentials","clients","users","audit","requests"] : ["credentials"];
+  const TAB_LABELS = { credentials:"Credentials", clients:"Clients", users:"Users", audit:"Audit Log", requests:"Access Requests" };
+
+  const tabRefs = useRef({});
+  const [underline, setUnderline] = useState({ left:0, width:0 });
+  useEffect(() => {
+    const el = tabRefs.current[tab];
+    if (el) setUnderline({ left: el.offsetLeft, width: el.offsetWidth });
+  }, [tab, isAdmin, pendingCount]);
 
   const gridBg = {
     minHeight:"100vh", background:"var(--bg-base)",
@@ -2122,24 +2953,46 @@ function Dashboard({ user, onLogout }) {
         </div>
 
         {TABS.length>1 && (
-          <div style={{ display:"flex", gap:4, background:"rgba(0,0,0,0.3)", border:"1px solid var(--border-subtle)", borderRadius:12, padding:4 }}>
+          <div style={{ position:"relative", display:"flex", gap:4, background:"rgba(0,0,0,0.3)", border:"1px solid var(--border-subtle)", borderRadius:12, padding:4 }}>
             {TABS.map(t=>{ const on=tab===t;
               return (
-                <button key={t} onClick={()=>setTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", fontSize:13, fontWeight:on?600:500, cursor:"pointer",
+                <button key={t} ref={el=>{ tabRefs.current[t]=el; }} onClick={()=>setTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", fontSize:13, fontWeight:on?600:500, cursor:"pointer",
                   borderRadius:9, border:"none", transition:"all 0.2s ease",
                   background:on?"var(--bg-elevated)":"transparent", color:on?"var(--text-primary)":"var(--text-muted)",
                   boxShadow:on?"0 2px 8px rgba(0,0,0,0.4)":"none" }}>
                   {TAB_LABELS[t]}
                   {t==="requests"&&pendingCount>0&&(<span style={{ width:6, height:6, borderRadius:"50%", background:"var(--gold-bright)" }} />)}
+                  {t==="users"&&pendingRegCount>0&&(<span style={{ width:6, height:6, borderRadius:"50%", background:"var(--gold-bright)" }} />)}
                 </button>
               ); })}
+            <div style={{ position:"absolute", bottom:1, height:2, borderRadius:2, background:"var(--gold-bright)", left:underline.left, width:underline.width,
+              transition:"left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1)", pointerEvents:"none" }} />
           </div>
         )}
 
         <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-          {isAdmin && pendingCount>0 && (
-            <div style={{ position:"relative", fontSize:18, cursor:"default" }} title={`${pendingCount} pending request(s)`}>🔔
-              <span style={{ position:"absolute", top:-2, right:-2, width:8, height:8, borderRadius:"50%", background:"var(--gold-bright)" }} />
+          {isAdmin && (pendingCount>0 || pendingRegCount>0) && (
+            <div style={{ position:"relative" }}>
+              <button onClick={()=>setShowBell(b=>!b)} style={{ position:"relative", fontSize:18, background:"none", border:"none", cursor:"pointer", padding:0, lineHeight:1 }}>🔔
+                <span style={{ position:"absolute", top:-4, right:-6, minWidth:15, height:15, padding:"0 3px", borderRadius:8, background:"var(--gold-bright)", color:"#03070f", fontSize:9, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" }}>{pendingCount+pendingRegCount}</span>
+              </button>
+              {showBell && (
+                <>
+                  <div onClick={()=>setShowBell(false)} style={{ position:"fixed", inset:0, zIndex:140 }} />
+                  <div style={{ ...dropdownPanel, right:0, left:"auto", top:"calc(100% + 10px)", minWidth:240, zIndex:150 }}>
+                    {pendingRegCount>0 && (
+                      <button onClick={()=>{ setTab("users"); setShowBell(false); }} style={{ width:"100%", textAlign:"left", background:"none", border:"none", color:"var(--text-primary)", cursor:"pointer", padding:"10px 12px", borderRadius:8, fontSize:13 }}>
+                        🧑 {pendingRegCount} registration request{pendingRegCount===1?"":"s"} pending
+                      </button>
+                    )}
+                    {pendingCount>0 && (
+                      <button onClick={()=>{ setTab("requests"); setShowBell(false); }} style={{ width:"100%", textAlign:"left", background:"none", border:"none", color:"var(--text-primary)", cursor:"pointer", padding:"10px 12px", borderRadius:8, fontSize:13 }}>
+                        🔑 {pendingCount} access request{pendingCount===1?"":"s"} pending
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
           <div style={{ width:1, height:28, background:"var(--border-subtle)" }} />
@@ -2155,7 +3008,8 @@ function Dashboard({ user, onLogout }) {
 
       <main style={{ maxWidth:1280, margin:"0 auto", padding:28 }}>
         {tab==="credentials" && <CredentialsTab session={session} toast={toast} />}
-        {tab==="users"&&isAdmin && <UsersTab session={session} toast={toast} />}
+        {tab==="clients"&&isAdmin && <ClientsTab session={session} toast={toast} />}
+        {tab==="users"&&isAdmin && <UsersTab session={session} toast={toast} onPendingChange={refreshPending} />}
         {tab==="audit"&&isAdmin && <AuditTab session={session} toast={toast} />}
         {tab==="requests"&&isAdmin && <AccessRequestsTab session={session} toast={toast} onChange={refreshPending} />}
       </main>
@@ -2181,20 +3035,28 @@ export default function EagleRCM() {
   useEffect(() => {
     (async () => {
       if (!isSupabaseConfigured) { setStage({ name:"unconfigured" }); return; }
+      const invite = new URLSearchParams(window.location.search).get("invite");
+      if (invite) { setStage({ name:"register", token:invite }); return; }
       try {
         const { data } = await supabase.auth.getSession();
         if (data.session) {
           const user = await getMyProfile();
-          if (user) {
+          if (user && user.active !== false) {
             setSession({ userId:user.id, userName:user.name, team:user.team, loginAt:new Date().toISOString(), lastActivityAt:new Date().toISOString() });
             setStage({ name:"dashboard", user });
             return;
           }
+          if (user && user.active === false) { try { await supabase.auth.signOut(); } catch { /* ignore */ } }
         }
       } catch { /* fall through to login */ }
       setStage({ name:"login" });
     })();
   }, []);
+
+  const backToLogin = () => {
+    try { const url = new URL(window.location.href); url.searchParams.delete("invite"); window.history.replaceState({}, "", url.pathname + url.search); } catch { /* ignore */ }
+    setStage({ name:"login" });
+  };
 
   const handleLogin = ({ stage:s, user }) => {
     if (s==="totp") setStage({ name:"totp", user });
@@ -2222,6 +3084,7 @@ export default function EagleRCM() {
       </div>
     </div></>
   );
+  if (stage.name==="register") return <><GlobalStyles /><RegistrationScreen token={stage.token} onBackToLogin={backToLogin} /></>;
   if (stage.name==="login") return <><GlobalStyles /><LoginScreen onLogin={handleLogin} /></>;
   if (stage.name==="totp") return <><GlobalStyles /><TOTPScreen user={stage.user} onVerify={u=>setStage({ name:"dashboard", user:u })} onBack={()=>setStage({ name:"login" })} /></>;
   if (stage.name==="dashboard") return <Dashboard user={stage.user} onLogout={handleLogout} />;

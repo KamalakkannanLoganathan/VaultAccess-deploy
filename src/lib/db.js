@@ -7,7 +7,7 @@ import { supabase } from "./supabase";
 // ─── row <-> app mappers ────────────────────────────────────────────────────
 const credFromRow = (r) => ({
   id: r.id, portal: r.portal, url: r.url || "", username: r.username, password: r.password,
-  category: r.category, client: r.client || "",
+  clientId: r.client_id || null, clientName: r.client_name || "",
   authMethod: r.auth_method || "None", authLocation: r.auth_location || "",
   verifyEmail: r.verify_email || "", verifyText: r.verify_text || "", verifyAuth: r.verify_auth || "",
   timeRestriction: r.time_restriction || null,
@@ -21,7 +21,7 @@ const credToRow = (c) => {
   const all = c.teams === "all";
   return {
     portal: c.portal, url: c.url || "", username: c.username, password: c.password,
-    category: c.category, client: c.client || "",
+    client_id: c.clientId || null, client_name: c.clientName || "",
     auth_method: c.authMethod || "None", auth_location: c.authLocation || "",
     verify_email: c.verifyEmail || "", verify_text: c.verifyText || "", verify_auth: c.verifyAuth || "",
     time_restriction: c.timeRestriction || null,
@@ -31,10 +31,23 @@ const credToRow = (c) => {
   };
 };
 
+const clientFromRow = (r) => ({
+  id: r.id, name: r.name, code: r.code || "", color: r.color || "#6366f1",
+  privilegeLevel: r.privilege_level || "standard", allowedTeams: r.allowed_teams || [],
+  description: r.description || "", active: r.active !== false,
+  createdAt: r.created_at, createdBy: r.created_by || "",
+});
+const clientToRow = (c) => ({
+  name: c.name, code: c.code || "", color: c.color || "#6366f1",
+  privilege_level: c.privilegeLevel || "standard", allowed_teams: Array.isArray(c.allowedTeams) ? c.allowedTeams : [],
+  description: c.description || "", active: c.active !== false,
+});
+
 const userFromRow = (p) => ({
   id: p.id, name: p.name, username: p.username, team: p.team, avatar: p.avatar || "",
   createdAt: p.created_at, lastLoginAt: p.last_login_at,
   twoFactorEnabled: !!p.two_factor_enabled, twoFactorSecret: p.two_factor_secret || "",
+  active: p.active !== false,
 });
 
 const auditFromRow = (a) => ({
@@ -117,6 +130,26 @@ export async function deleteCredential(id) {
 export async function bulkCreateCredentials(creds, addedBy) {
   const rows = creds.map((c) => ({ ...credToRow(c), added_by: addedBy }));
   const { error } = await supabase.from("credentials").insert(rows);
+  if (error) throw error;
+}
+
+// ─── clients (admin-managed, with privilege levels) ─────────────────────────
+export async function listClients() {
+  const { data, error } = await supabase.from("clients").select("*").order("name");
+  if (error) throw error;
+  return data.map(clientFromRow);
+}
+export async function createClient(c, createdBy) {
+  const { data, error } = await supabase.from("clients").insert({ ...clientToRow(c), created_by: createdBy }).select().single();
+  if (error) throw error;
+  return clientFromRow(data);
+}
+export async function updateClient(id, c) {
+  const { error } = await supabase.from("clients").update(clientToRow(c)).eq("id", id);
+  if (error) throw error;
+}
+export async function archiveClient(id, active) {
+  const { error } = await supabase.from("clients").update({ active }).eq("id", id);
   if (error) throw error;
 }
 
@@ -239,3 +272,71 @@ async function adminApi(body) {
 export const adminCreateUser = (u) => adminApi({ action: "create", ...u });
 export const adminResetPassword = (id, password) => adminApi({ action: "resetPassword", id, password });
 export const adminDeleteUser = (id) => adminApi({ action: "delete", id });
+
+// ─── invite tokens (admin) ───────────────────────────────────────────────────
+const inviteFromRow = (r) => ({
+  id: r.id, token: r.token, label: r.label || "", createdBy: r.created_by || "", createdAt: r.created_at,
+  expiresAt: r.expires_at, allowedTeam: r.allowed_team || null, maxUses: r.max_uses || 1,
+  usedCount: r.used_count || 0, active: r.active !== false,
+});
+export async function createInviteToken({ token, label, allowedTeam, maxUses, expiresAt }, createdBy) {
+  const { data, error } = await supabase.from("invite_tokens").insert({
+    token, label: label || "", allowed_team: allowedTeam || null, max_uses: maxUses || 1,
+    expires_at: expiresAt, created_by: createdBy, used_count: 0, active: true,
+  }).select().single();
+  if (error) throw error;
+  return inviteFromRow(data);
+}
+export async function listInviteTokens() {
+  const { data, error } = await supabase.from("invite_tokens").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data.map(inviteFromRow);
+}
+export async function revokeInviteToken(id) {
+  const { error } = await supabase.from("invite_tokens").update({ active: false }).eq("id", id);
+  if (error) throw error;
+}
+
+// ─── pending registrations (admin) ───────────────────────────────────────────
+const regFromRow = (r) => ({
+  id: r.id, tokenId: r.token_id, userId: r.user_id, fullName: r.full_name, username: r.username,
+  requestedTeam: r.requested_team || null, submittedAt: r.submitted_at, status: r.status,
+  reviewedBy: r.reviewed_by || null, reviewedAt: r.reviewed_at || null, rejectionReason: r.rejection_reason || null,
+});
+export async function listPendingRegistrations() {
+  const { data, error } = await supabase.from("pending_registrations").select("*").order("submitted_at", { ascending: false });
+  if (error) throw error;
+  return data.map(regFromRow);
+}
+export async function approveRegistration(reg, team, reviewedBy) {
+  if (reg.userId) {
+    const { error: pe } = await supabase.from("profiles").update({ active: true, team }).eq("id", reg.userId);
+    if (pe) throw pe;
+  }
+  const { error } = await supabase.from("pending_registrations")
+    .update({ status: "approved", reviewed_by: reviewedBy, reviewed_at: new Date().toISOString() }).eq("id", reg.id);
+  if (error) throw error;
+}
+export async function rejectRegistration(reg, reason, reviewedBy) {
+  const { error } = await supabase.from("pending_registrations")
+    .update({ status: "rejected", reviewed_by: reviewedBy, reviewed_at: new Date().toISOString(), rejection_reason: reason || null }).eq("id", reg.id);
+  if (error) throw error;
+  if (reg.userId) { try { await adminDeleteUser(reg.userId); } catch { /* leave inactive account if delete fails */ } }
+}
+
+// ─── anonymous registration (token-gated serverless endpoint) ────────────────
+async function registerApi(body) {
+  const res = await fetch("/api/register", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  let json = {};
+  try { json = await res.json(); } catch { /* ignore */ }
+  if (!res.ok) {
+    const hint = res.status === 404 ? "Registration runs on the deployed site (or via `vercel dev`)." : (json.error || `Request failed (${res.status})`);
+    throw new Error(hint);
+  }
+  return json;
+}
+export const inviteValidate = (token) => registerApi({ action: "validate", token });
+export const inviteCheckUsername = (username) => registerApi({ action: "checkUsername", username });
+export const inviteSubmit = (payload) => registerApi({ action: "submit", ...payload });
