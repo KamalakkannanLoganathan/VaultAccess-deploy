@@ -954,6 +954,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
 
   return (
     <div className="erc-card" style={{ ...S.card(), ...finalExtra, display:"flex", flexDirection:"column", gap:12,
+      position:"relative", zIndex: popover ? 50 : undefined,
       animation:`ercCardIn 0.3s ease-out both`, animationDelay:`${(index||0)*40}ms` }}>
       {leftBorderEl}
       {/* Header */}
