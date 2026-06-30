@@ -300,6 +300,10 @@ function GlobalStyles() {
       .erc-skel { background:linear-gradient(90deg, var(--bg-surface) 25%, var(--bg-elevated) 50%, var(--bg-surface) 75%);
         background-size:200% 100%; animation:ercShimmer 1.5s infinite; }
       .erc-modalcard { animation:ercModalIn 0.2s cubic-bezier(0.34,1.56,0.64,1); }
+      @keyframes ercDot3 { 0%,100%{transform:scale(0.6); opacity:0.3} 50%{transform:scale(1.2); opacity:1} }
+      @keyframes ercSpin { to{transform:rotate(360deg)} }
+      @keyframes ercTabIn { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)} }
+      .erc-tabin { animation:ercTabIn 0.2s ease-out; }
       @keyframes ercMesh { 0%{transform:translate(0,0) scale(1)} 50%{transform:translate(-3%,2%) scale(1.05)} 100%{transform:translate(0,0) scale(1)} }
       @keyframes ercGlow { 0%,100%{opacity:0.5} 50%{opacity:1} }
       @keyframes ercSheen { 0%{background-position:-150% 0} 100%{background-position:250% 0} }
@@ -499,7 +503,11 @@ function LoginScreen({ onLogin }) {
           {error && <div style={{ background:"var(--danger-bg)", border:"1px solid rgba(239,68,68,0.3)",
             color:"#fca5a5", borderRadius:10, padding:"10px 14px", fontSize:13, marginBottom:16 }}>{error}</div>}
           <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), width:"100%", height:48,
-            fontSize:14, justifyContent:"center", opacity:busy?0.7:1 }}>{busy?"Signing in…":"Sign In"}</button>
+            fontSize:14, justifyContent:"center", gap:10, opacity:busy?0.85:1 }}>
+            {busy && <span style={{ width:16, height:16, borderRadius:"50%", border:"2px solid rgba(0,0,0,0.35)",
+              borderTopColor:"rgba(0,0,0,0.85)", display:"inline-block", animation:"ercSpin 0.8s linear infinite" }} />}
+            {busy?"Signing in…":"Sign In"}
+          </button>
         </form>
 
         {isLocalhost && (
@@ -578,8 +586,11 @@ function RegistrationScreen({ token, onBackToLogin }) {
   );
   const logo = (
     <div style={{ textAlign:"center", marginBottom:24 }}>
-      <div style={{ width:64, height:64, margin:"0 auto 16px", borderRadius:18, fontSize:34, background:"linear-gradient(135deg,#f5b800,#d4960a)", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 8px 32px rgba(245,184,0,0.4)" }}>🦅</div>
-      <h1 style={{ color:"var(--text-primary)", fontSize:28, fontWeight:800, letterSpacing:-1 }}>Eagle RCM</h1>
+      <div style={{ display:"inline-flex", alignItems:"center", gap:11, marginBottom:8 }}>
+        <span className="erc-logo-gold" style={{ fontSize:30, fontWeight:900, letterSpacing:2 }}>EAGLE</span>
+        <span style={{ width:1, height:22, background:"var(--border-strong)" }} />
+        <span style={{ fontSize:30, fontWeight:200, letterSpacing:5, color:"var(--text-primary)" }}>RCM</span>
+      </div>
       <p style={{ color:"var(--text-secondary)", fontSize:13, marginTop:6 }}>You've been invited to join</p>
     </div>
   );
@@ -1630,26 +1641,48 @@ function RequestAccessModal({ cred, session, onClose, toast, onDone }) {
 }
 
 // ─── Import Preview Modal ─────────────────────────────────────────────────────
-function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }) {
+function ImportPreviewModal({ rows, existingCreds, clients, deptList, onConfirm, onClose }) {
   const activeClients = (clients||[]).filter(c=>c.active);
+  const depts = deptList || DEFAULT_DEPTS;
+  const teamKnown = {}; depts.forEach(d=>{ teamKnown[d.id.toLowerCase()]=1; teamKnown[d.label.toLowerCase()]=1; });
   const base = rows.map(r => {
+    // Only these three block a row from importing.
     const errors = [];
     if (!r.Portal) errors.push("Missing Portal");
     if (!r.Username) errors.push("Missing Username");
     if (!r.Password) errors.push("Missing Password");
-    const clientVal = String(r.Client||r["Client Name"]||r.Clients||"").trim();
-    if (!clientVal) errors.push("Missing Client");
-    else if (clientVal.toLowerCase()!=="all") {
-      for (const n of clientVal.split(",").map(s=>s.trim()).filter(Boolean)) {
-        if (!activeClients.some(c=>c.name.toLowerCase()===n.toLowerCase())) { errors.push(`Unknown client: ${n}. Create this client first.`); break; }
-      }
+
+    // Everything below is a warning at most — never blocks import.
+    const warnings = [];
+    const clientRaw = String(r["Client Name"]||r.Client||r.Clients||"").trim();
+    let clientDisplay = "None";
+    if (!clientRaw) { warnings.push("No client assigned — will import without client tag"); }
+    else if (clientRaw.toLowerCase()==="all") { clientDisplay = "All Clients"; }
+    else {
+      const parts = clientRaw.split(",").map(s=>s.trim()).filter(Boolean);
+      const known = parts.filter(n=>activeClients.some(c=>c.name.toLowerCase()===n.toLowerCase()));
+      const unknown = parts.filter(n=>!activeClients.some(c=>c.name.toLowerCase()===n.toLowerCase()));
+      if (unknown.length) warnings.push(`Unknown client ${unknown.map(x=>`'${x}'`).join(", ")} — ${known.length?"others applied":"will import without client tag"}`);
+      clientDisplay = known.length ? known.join(", ") : `Unknown: ${clientRaw}`;
     }
+
+    const teamRaw = String(r.Teams||"").trim();
+    if (teamRaw && teamRaw.toLowerCase()!=="all") {
+      const unknownTeams = [];
+      for (const seg of teamRaw.split(",").map(s=>s.trim()).filter(Boolean)) {
+        if (teamKnown[seg.toLowerCase()]) continue;
+        if (seg.split(/\s+/).some(t=>teamKnown[t.toLowerCase()])) continue;
+        unknownTeams.push(seg);
+      }
+      if (unknownTeams.length) warnings.push(`Unknown team ${unknownTeams.map(x=>`'${x}'`).join(", ")} — skipped`);
+    }
+
     // duplicate = portal + username match (case-insensitive)
     const existing = existingCreds.find(c =>
       c.portal.toLowerCase()===String(r.Portal||"").toLowerCase() &&
       c.username.toLowerCase()===String(r.Username||"").toLowerCase());
-    const status = errors.length>0 ? "error" : existing ? "duplicate" : "valid";
-    return { row:r, status, errors, existing };
+    const status = errors.length>0 ? "error" : existing ? "duplicate" : warnings.length>0 ? "warning" : "valid";
+    return { row:r, status, errors, warnings, existing, clientDisplay };
   });
 
   const [decisions, setDecisions] = useState({}); // index -> "overwrite" | "skip" (default skip)
@@ -1659,9 +1692,10 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
   const setAllDup = (v) => { const d={}; base.forEach((b,i)=>{ if(b.status==="duplicate") d[i]=v; }); setDecisions(d); };
 
   const counts = {
-    nw: base.filter(b=>b.status==="valid").length,
+    nw: base.filter(b=>b.status==="valid"||b.status==="warning").length,
     overwrite: base.filter((b,i)=>b.status==="duplicate" && decOf(i)==="overwrite").length,
     skip: base.filter((b,i)=>b.status==="duplicate" && decOf(i)==="skip").length,
+    warnings: base.filter((b,i)=>(b.status==="warning") || (b.status==="duplicate" && decOf(i)==="overwrite" && b.warnings.length>0)).length,
     errors: base.filter(b=>b.status==="error").length,
   };
   const totalImport = counts.nw + counts.overwrite;
@@ -1688,7 +1722,7 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
       <div style={{ ...S.modal(), padding:28, width:"95vw", maxWidth:820, maxHeight:"85vh", overflowY:"auto" }}>
         <h3 style={{ fontWeight:700, marginBottom:12, color:"var(--text-primary)", fontSize:18 }}>Import Preview</h3>
         <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center", flexWrap:"wrap" }}>
-          {pill("#10b981", `${counts.nw} new`)}{pill("#f5b800", `${counts.overwrite} overwrite`)}{pill("#94a3b8", `${counts.skip} skip`)}{pill("#ef4444", `${counts.errors} errors`)}
+          {pill("#10b981", `${counts.nw} new`)}{pill("#f5b800", `${counts.overwrite} overwrite`)}{pill("#f59e0b", `${counts.warnings} warnings`)}{pill("#94a3b8", `${counts.skip} skip`)}{pill("#ef4444", `${counts.errors} errors`)}
           {base.some(b=>b.status==="duplicate") && (
             <span style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8, fontSize:12, color:"var(--text-muted)" }}>
               Duplicates:
@@ -1700,7 +1734,7 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
         <div style={{ maxHeight:360, overflowY:"auto", marginBottom:16, border:"1px solid var(--border-subtle)", borderRadius:12 }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
-              <tr>{["Decision","Portal","URL","Username","Client","Teams"].map(h=>(
+              <tr>{["Status","Portal","Username","Client","Teams","Notes"].map(h=>(
                 <th key={h} style={{ background:"rgba(0,0,0,0.3)", padding:"10px", textAlign:"left", color:"var(--text-muted)",
                   borderBottom:"1px solid var(--border-default)", fontWeight:600, position:"sticky", top:0, textTransform:"uppercase", letterSpacing:1, fontSize:10 }}>{h}</th>
               ))}</tr>
@@ -1708,13 +1742,18 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
             <tbody>
               {base.map((b,i)=>{
                 const r=b.row; const ov = b.status==="duplicate" && decOf(i)==="overwrite";
-                const bg = b.status==="valid" ? "rgba(16,185,129,0.06)" : b.status==="error" ? "rgba(239,68,68,0.06)" : ov ? "rgba(245,184,0,0.10)" : "rgba(245,158,11,0.06)";
+                const dot = b.status==="valid" ? "#10b981" : b.status==="warning" ? "#f59e0b" : b.status==="error" ? "#ef4444" : "#f5b800";
+                const bg = b.status==="valid" ? "rgba(16,185,129,0.06)" : b.status==="warning" ? "rgba(245,158,11,0.06)"
+                  : b.status==="error" ? "rgba(239,68,68,0.07)" : ov ? "rgba(245,184,0,0.10)" : "rgba(148,163,184,0.05)";
+                const note = b.status==="error" ? b.errors.join(", ") : b.warnings.join(" · ");
+                const Dot = () => <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background:dot, marginRight:7, flexShrink:0 }} />;
                 return (
                   <React.Fragment key={i}>
-                    <tr style={{ background:bg, color:"var(--text-secondary)", borderLeft: ov?"2px solid var(--gold-bright)":"2px solid transparent" }}>
-                      <td style={{ ...td, minWidth:170 }}>
-                        {b.status==="valid" && <span style={{ color:"var(--success)", fontWeight:600 }}>✓ New</span>}
-                        {b.status==="error" && <span style={{ color:"#fca5a5", fontStyle:"italic" }}>✕ {b.errors.join(", ")}</span>}
+                    <tr style={{ background:bg, color:"var(--text-secondary)", borderLeft: "2px solid "+(ov?"var(--gold-bright)":"transparent") }}>
+                      <td style={{ ...td, minWidth:200 }}>
+                        {b.status==="valid" && <span style={{ display:"flex", alignItems:"center", color:"var(--success)", fontWeight:600 }}><Dot/>Ready</span>}
+                        {b.status==="warning" && <span style={{ display:"flex", alignItems:"center", color:"#fbbf24", fontWeight:600 }}><Dot/>Ready · warning</span>}
+                        {b.status==="error" && <span style={{ display:"flex", alignItems:"center", color:"#fca5a5", fontWeight:600 }}><Dot/>Error</span>}
                         {b.status==="duplicate" && (
                           <span style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                             <button onClick={()=>setDec(i,"overwrite")} style={miniBtn(decOf(i)==="overwrite","#f5b800")}>Import &amp; Overwrite</button>
@@ -1724,11 +1763,15 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
                           </span>
                         )}
                       </td>
-                      <td style={td}>{r.Portal}</td>
-                      <td style={td}>{r.URL}</td>
-                      <td style={td}>{r.Username}</td>
-                      <td style={td}>{r.Client||r["Client Name"]}</td>
-                      <td style={td}>{r.Teams}</td>
+                      <td style={td}>{r.Portal||<span style={{color:"#fca5a5"}}>—</span>}</td>
+                      <td style={{ ...td, maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={r.Username}>{r.Username||<span style={{color:"#fca5a5"}}>—</span>}</td>
+                      <td style={td}>{b.clientDisplay==="None"
+                        ? <span style={{ color:"var(--text-muted)" }}>None</span>
+                        : (b.clientDisplay||"").startsWith("Unknown:")
+                          ? <span style={{ color:"#fbbf24" }}>{b.clientDisplay}</span>
+                          : b.clientDisplay}</td>
+                      <td style={td}>{String(r.Teams||"").trim()||<span style={{ color:"var(--text-muted)" }}>all</span>}</td>
+                      <td style={{ ...td, color: b.status==="error"?"#fca5a5":"#fbbf24", fontSize:11, maxWidth:200 }}>{note||<span style={{ color:"var(--text-muted)" }}>—</span>}</td>
                     </tr>
                     {b.status==="duplicate" && expanded[i] && (
                       <tr style={{ background:"rgba(0,0,0,0.3)" }}>
@@ -2053,13 +2096,23 @@ function SkeletonGrid() {
   );
 }
 
-// ─── Loading splash ───────────────────────────────────────────────────────────
+// ─── Loading splash — minimal 3-dot pulse, no logo ──────────────────────────────
+function DotLoader() {
+  return (
+    <div style={{ display:"flex", gap:7 }} aria-label="Loading" role="status">
+      {[0,1,2].map(i=>(
+        <span key={i} style={{ width:8, height:8, borderRadius:"50%", background:"var(--gold-bright)",
+          animation:`ercDot3 0.9s ease-in-out ${i*0.15}s infinite` }} />
+      ))}
+    </div>
+  );
+}
 function Splash({ text }) {
   return (
-    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:"var(--text-secondary)", gap:14 }}>
-      <div style={{ width:60, height:60, borderRadius:16, fontSize:32, background:"linear-gradient(135deg,#f5b800,#d4960a)",
-        display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 8px 32px rgba(245,184,0,0.4)" }}>🦅</div>
-      <div style={{ fontSize:14 }}>{text||"Loading…"}</div>
+    <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", flexDirection:"column",
+      alignItems:"center", justifyContent:"center", color:"var(--text-muted)", gap:16 }}>
+      <DotLoader />
+      <div style={{ fontSize:13, color:"var(--text-muted)", animation:"ercFade 0.3s ease 0.2s both" }}>{text||"Loading Eagle RCM…"}</div>
     </div>
   );
 }
@@ -2241,11 +2294,37 @@ function CredentialsTab({ session, toast }) {
     reader.onload=ev=>{
       const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array"});
       const ws=wb.Sheets[wb.SheetNames[0]];
-      // Find the header row (decorated templates have title/instruction rows above it).
       const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-      let hdr=aoa.findIndex(r=>Array.isArray(r)&&r.some(c=>String(c).trim().toLowerCase()==="portal"));
-      if(hdr<0) hdr=0;
-      setImportRows(XLSX.utils.sheet_to_json(ws,{range:hdr,defval:""}));
+      // Step 1 — auto-detect the header row (decorated templates have title rows above it).
+      const hdr=aoa.findIndex(row=>Array.isArray(row)&&row.some(c=>String(c).trim().toLowerCase()==="portal"));
+      if(hdr<0){ toast("Could not find a header row. Make sure the file has a 'Portal' column header.","error"); return; }
+      const headers=(aoa[hdr]||[]).map(h=>String(h==null?"":h).trim());
+      // Step 2 — map each header (case-insensitive, trimmed, with aliases) to a canonical key.
+      const ALIAS={
+        "portal":"Portal","url":"URL","username":"Username","password":"Password",
+        "client name":"Client Name","client(s)":"Client Name","clients":"Client Name","client":"Client Name",
+        "teams":"Teams","team access":"Teams",
+        "expiry days":"Expiry Days",
+        "verify email":"Verify Email",
+        "verify text":"Verify Text","verify text (phone)":"Verify Text",
+        "verify auth":"Verify Auth","verify auth (authenticator)":"Verify Auth",
+        "time restriction type":"Time Restriction Type","window days":"Window Days",
+        "window start":"Window Start","window end":"Window End",
+        "expiry date":"Expiry Date","schedule note":"Schedule Note",
+      };
+      const colIndex={}; headers.forEach((h,i)=>{ const key=ALIAS[h.toLowerCase()]; if(key&&colIndex[key]===undefined) colIndex[key]=i; });
+      const cell=(row,key)=>{ const i=colIndex[key]; if(i===undefined) return ""; const v=row[i]; return v==null?"":String(v).trim(); };
+      const KEYS=["Portal","URL","Username","Password","Client Name","Teams","Expiry Days","Verify Email","Verify Text","Verify Auth","Time Restriction Type","Window Days","Window Start","Window End","Expiry Date","Schedule Note"];
+      // Step 3 — normalize to canonical objects, skipping blank padding rows.
+      const out=[];
+      for(const row of aoa.slice(hdr+1)){
+        if(!Array.isArray(row)) continue;
+        const o={}; KEYS.forEach(k=>{ o[k]=cell(row,k); });
+        if(o.Portal==="" && o.Username==="" && o.Password==="") continue; // blank padding row
+        out.push(o);
+      }
+      if(out.length===0){ toast("No credential rows found below the header.","error"); return; }
+      setImportRows(out);
     };
     reader.readAsArrayBuffer(file); e.target.value="";
   };
@@ -2257,27 +2336,44 @@ function CredentialsTab({ session, toast }) {
     if(type==="schedule") return { enabled:true, type:"schedule", note:r["Schedule Note"]||"" };
     return null;
   };
+  const resolveTeams = (raw) => {
+    const val = String(raw||"").trim();
+    if (!val || val.toLowerCase()==="all") return "all"; // blank or "all" → everyone
+    const deptList = dctx?dctx.list:DEFAULT_DEPTS;
+    const byId={}, byLabel={};
+    deptList.forEach(d=>{ byId[d.id.toLowerCase()]=d.id; byLabel[d.label.toLowerCase()]=d.id; });
+    const ids=[];
+    for (const seg of val.split(",").map(s=>s.trim()).filter(Boolean)) {
+      const whole = byId[seg.toLowerCase()]||byLabel[seg.toLowerCase()];
+      if (whole) { ids.push(whole); continue; }
+      for (const tok of seg.split(/\s+/).filter(Boolean)) { const m=byId[tok.toLowerCase()]||byLabel[tok.toLowerCase()]; if(m) ids.push(m); }
+    }
+    const uniq=[...new Set(ids)];
+    return uniq.length ? uniq : "all"; // nothing matched → keep credential visible
+  };
   const buildImportRecord = (r) => {
-    const raw = String(r.Client||r["Client Name"]||r.Clients||"").trim();
+    const raw = String(r["Client Name"]||r.Client||r.Clients||"").trim();
     let clientIds, clientNames;
-    if (raw.toLowerCase()==="all") { clientIds=["all"]; clientNames=["All Clients"]; }
+    if (!raw) { clientIds=[]; clientNames=[]; }               // blank → import with no client tag
+    else if (raw.toLowerCase()==="all") { clientIds=["all"]; clientNames=["All Clients"]; }
     else {
       const names = raw.split(",").map(s=>s.trim()).filter(Boolean);
-      const matched = names.map(n=>clients.find(x=>x.active && x.name.toLowerCase()===n.toLowerCase()));
-      clientIds = matched.map(c=>c?c.id:null).filter(Boolean);
-      clientNames = matched.map((c,i)=>c?c.name:names[i]);
+      const matched = names.map(n=>clients.find(x=>x.active && x.name.toLowerCase()===n.toLowerCase())).filter(Boolean);
+      clientIds = matched.map(c=>c.id);
+      clientNames = matched.map(c=>c.name);                   // only the matched clients are applied
     }
+    const expiry = parseInt(String(r["Expiry Days"]||"").replace(/[^\d]/g,""),10);
     return {
       portal:r.Portal, url:r.URL||"", username:r.Username||"", password:r.Password||"",
       clientIds, clientNames,
       verifyEmail:r["Verify Email"]||"", verifyText:r["Verify Text"]||"", verifyAuth:r["Verify Auth"]||"",
-      teams:r.Teams==="all"?"all":String(r.Teams||"").split(",").map(t=>t.trim()).filter(Boolean),
-      passwordExpiryDays:+(r["Expiry Days"])||90, needsRotation:false, rotationNote:"",
+      teams: resolveTeams(r.Teams),
+      passwordExpiryDays: expiry>0 ? expiry : 90,
       timeRestriction: parseImportTR(r),
     };
   };
   const handleImportConfirm = async (result) => {
-    const inserts = result.filter(b=>b.status==="valid").map(b=>buildImportRecord(b.row));
+    const inserts = result.filter(b=>b.status==="valid"||b.status==="warning").map(b=>buildImportRecord(b.row));
     const overwrites = result.filter(b=>b.status==="duplicate" && b.decision==="overwrite");
     const skipped = result.filter(b=>b.status==="duplicate" && b.decision==="skip").length;
     const errored = result.filter(b=>b.status==="error").length;
@@ -2595,7 +2691,7 @@ function CredentialsTab({ session, toast }) {
         <RequestAccessModal cred={requestCred} session={session} onClose={()=>setRequestCred(null)} toast={toast} onDone={loadAll} />
       )}
       {importRows && (
-        <ImportPreviewModal rows={importRows} existingCreds={creds} clients={clients} onConfirm={handleImportConfirm} onClose={()=>setImportRows(null)} />
+        <ImportPreviewModal rows={importRows} existingCreds={creds} clients={clients} deptList={dctx?dctx.list:DEFAULT_DEPTS} onConfirm={handleImportConfirm} onClose={()=>setImportRows(null)} />
       )}
     </div>
   );
@@ -3436,11 +3532,13 @@ function Dashboard({ user, onLogout }) {
       </header>
 
       <main style={{ maxWidth:1280, margin:"0 auto", padding:28 }}>
-        {tab==="credentials" && <CredentialsTab session={session} toast={toast} />}
-        {tab==="clients"&&isAdmin && <ClientsTab session={session} toast={toast} />}
-        {tab==="users"&&isAdmin && <UsersTab session={session} toast={toast} onPendingChange={refreshPending} />}
-        {tab==="audit"&&isAdmin && <AuditTab session={session} toast={toast} />}
-        {tab==="requests"&&isAdmin && <AccessRequestsTab session={session} toast={toast} onChange={refreshPending} />}
+        <div key={tab} className="erc-tabin">
+          {tab==="credentials" && <CredentialsTab session={session} toast={toast} />}
+          {tab==="clients"&&isAdmin && <ClientsTab session={session} toast={toast} />}
+          {tab==="users"&&isAdmin && <UsersTab session={session} toast={toast} onPendingChange={refreshPending} />}
+          {tab==="audit"&&isAdmin && <AuditTab session={session} toast={toast} />}
+          {tab==="requests"&&isAdmin && <AccessRequestsTab session={session} toast={toast} onChange={refreshPending} />}
+        </div>
       </main>
 
       {showProfile && (
