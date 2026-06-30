@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useContext, useMemo } from "react";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import * as OTPAuth from "otpauth";
 import QRCode from "qrcode";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import {
   getMyProfile, touchLastLogin, updateProfile,
   listCredentials, createCredential, updateCredential, patchCredential, deleteCredential, bulkCreateCredentials,
+  setInUse, setNotWorking,
   listUsers, logAudit, listAudit, createRequest, listRequests, resolveRequest,
   listFavourites, toggleFavourite, adminCreateUser, adminResetPassword, adminDeleteUser,
   listDepartments, createDepartment, updateDepartment, deleteDepartment,
@@ -99,6 +101,16 @@ const timeAgo = (ts) => {
 };
 const fmtDate = (ts) => ts ? new Date(ts).toLocaleString() : "Never";
 const daysSince = (ts) => ts ? Math.floor((Date.now() - new Date(ts)) / 86400000) : 0;
+const hoursSince = (ts) => ts ? (Date.now() - new Date(ts)) / 3600000 : 0;
+const fmtSmartTime = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts), now = new Date();
+  const time = d.toLocaleTimeString(undefined, { hour:"numeric", minute:"2-digit" });
+  if (d.toDateString() === now.toDateString()) return `Today at ${time}`;
+  const yd = new Date(now); yd.setDate(now.getDate()-1);
+  if (d.toDateString() === yd.toDateString()) return `Yesterday at ${time}`;
+  return `${d.toLocaleDateString(undefined,{ month:"short", day:"numeric" })} at ${time}`;
+};
 const canAccess = (cred, team) => {
   if (team === "admin") return true;
   if (cred.teams === "all") return true;
@@ -228,22 +240,30 @@ const S = {
 function GlobalStyles() {
   return (
     <style>{`
+      /* ── Obsidian Premium — token system (Bloomberg / Linear / Vercel) ── */
       :root {
-        --bg-void:#03070f; --bg-base:#080f1e; --bg-surface:#0d1829; --bg-elevated:#132035; --bg-highlight:#1a2d4a;
-        --border-subtle:rgba(255,255,255,0.06); --border-default:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.18);
-        --gold-bright:#f5b800; --gold-mid:#d4960a; --gold-dim:rgba(245,184,0,0.15); --gold-glow:rgba(245,184,0,0.25);
-        --text-primary:#f0f4ff; --text-secondary:#8899b4; --text-muted:#4a5568; --text-gold:#f5b800;
+        --bg-void:#000000; --bg-base:#070a10; --bg-surface:#0c111b; --bg-elevated:#111826; --bg-highlight:#18222f;
+        --border-subtle:rgba(255,255,255,0.05); --border-default:rgba(255,255,255,0.09); --border-strong:rgba(255,255,255,0.16);
+        --gold-bright:#f5c451; --gold-mid:#d4960a; --gold-deep:#a9760a; --gold-dim:rgba(245,196,81,0.13); --gold-glow:rgba(245,196,81,0.22);
+        --text-primary:#eef2f8; --text-secondary:#9aa6bd; --text-muted:#586273; --text-gold:#f5c451;
         --success:#10b981; --success-bg:rgba(16,185,129,0.12); --warning:#f59e0b; --warning-bg:rgba(245,158,11,0.12);
         --danger:#ef4444; --danger-bg:rgba(239,68,68,0.12); --info:#60a5fa; --info-bg:rgba(96,165,250,0.12);
+        --inuse:#f97316; --inuse-bg:rgba(249,115,22,0.10); --notworking:#ef4444; --notworking-bg:rgba(239,68,68,0.10);
         --font-ui:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; --font-mono:'JetBrains Mono',monospace;
+        --ring:0 0 0 3px var(--gold-dim); --shadow-card:0 1px 2px rgba(0,0,0,0.6),0 8px 32px rgba(0,0,0,0.45);
       }
       * { box-sizing:border-box; }
-      body { font-family:var(--font-ui); color:var(--text-primary); background:var(--bg-base); }
-      ::-webkit-scrollbar { width:6px; height:6px; }
+      body { font-family:var(--font-ui); color:var(--text-primary); background:var(--bg-void);
+        background-image:
+          radial-gradient(900px 600px at 12% -8%, rgba(245,196,81,0.06), transparent 60%),
+          radial-gradient(1100px 700px at 100% 0%, rgba(96,165,250,0.05), transparent 55%),
+          radial-gradient(800px 800px at 50% 120%, rgba(245,196,81,0.04), transparent 60%);
+        background-attachment:fixed; }
+      ::-webkit-scrollbar { width:8px; height:8px; }
       ::-webkit-scrollbar-track { background:transparent; }
-      ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12); border-radius:3px; }
-      ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.22); }
-      ::selection { background:rgba(245,184,0,0.25); color:#fff; }
+      ::-webkit-scrollbar-thumb { background:linear-gradient(var(--gold-deep),var(--gold-mid)); border-radius:8px; border:2px solid transparent; background-clip:padding-box; }
+      ::-webkit-scrollbar-thumb:hover { background:linear-gradient(var(--gold-mid),var(--gold-bright)); background-clip:padding-box; }
+      ::selection { background:rgba(245,196,81,0.28); color:#fff; }
       button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
         outline:2px solid rgba(245,184,0,0.5); outline-offset:2px;
       }
@@ -280,6 +300,19 @@ function GlobalStyles() {
       .erc-skel { background:linear-gradient(90deg, var(--bg-surface) 25%, var(--bg-elevated) 50%, var(--bg-surface) 75%);
         background-size:200% 100%; animation:ercShimmer 1.5s infinite; }
       .erc-modalcard { animation:ercModalIn 0.2s cubic-bezier(0.34,1.56,0.64,1); }
+      @keyframes ercMesh { 0%{transform:translate(0,0) scale(1)} 50%{transform:translate(-3%,2%) scale(1.05)} 100%{transform:translate(0,0) scale(1)} }
+      @keyframes ercGlow { 0%,100%{opacity:0.5} 50%{opacity:1} }
+      @keyframes ercSheen { 0%{background-position:-150% 0} 100%{background-position:250% 0} }
+      .erc-logo-gold { background:linear-gradient(110deg,var(--gold-deep) 0%,var(--gold-bright) 40%,#fff7e0 50%,var(--gold-bright) 60%,var(--gold-deep) 100%);
+        background-size:250% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:ercSheen 6s linear infinite; }
+      /* Accessibility — honour reduced-motion across the whole app */
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration:0.001ms !important; animation-iteration-count:1 !important;
+          transition-duration:0.001ms !important; scroll-behavior:auto !important;
+        }
+        .erc-card:hover { transform:none; }
+      }
     `}</style>
   );
 }
@@ -370,6 +403,17 @@ function Aurora() {
   );
 }
 
+// Subtle film-grain noise overlay (SVG fractal noise, fixed, non-interactive).
+function NoiseOverlay() {
+  const svg = encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"
+  );
+  return (
+    <div aria-hidden style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none",
+      backgroundImage:`url("data:image/svg+xml,${svg}")`, opacity:0.035, mixBlendMode:"overlay" }} />
+  );
+}
+
 // ─── Login Screen ─────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("");
@@ -428,11 +472,15 @@ function LoginScreen({ onLogin }) {
     <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center",
       justifyContent:"center", flexDirection:"column", padding:20, position:"relative" }}>
       <Aurora />
+      <NoiseOverlay />
       <div style={{ position:"relative", zIndex:1, width:"100%", maxWidth:440, display:"flex", flexDirection:"column", alignItems:"center" }}>
         <div style={{ textAlign:"center", marginBottom:28 }}>
-          
-          <h1 style={{ color:"var(--text-primary)", fontSize:28, fontWeight:800, letterSpacing:-1 }}>Eagle RCM</h1>
-          <p style={{ color:"var(--text-secondary)", fontSize:13, marginTop:6 }}>Credential intelligence for high-performing teams</p>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:12, animation:"ercFade 0.6s ease" }}>
+            <span className="erc-logo-gold" style={{ fontSize:34, fontWeight:900, letterSpacing:2, fontFamily:"var(--font-ui)" }}>EAGLE</span>
+            <span style={{ width:1, height:26, background:"var(--border-strong)" }} />
+            <span style={{ fontSize:34, fontWeight:200, letterSpacing:6, color:"var(--text-primary)" }}>RCM</span>
+          </div>
+          <p style={{ color:"var(--text-secondary)", fontSize:12, marginTop:10, letterSpacing:0.5, textTransform:"uppercase", fontWeight:500 }}>Credential intelligence for high-performing teams</p>
         </div>
 
         <form key={shakeKey} onSubmit={handleSubmit} style={{ width:"100%", ...glass, borderTop:"1px solid rgba(245,184,0,0.3)",
@@ -789,10 +837,39 @@ function ClientBadges({ cred, clientsById, pulse }) {
   );
 }
 
+// ─── Status popover (Mark In Use / Report Issue / Resolve) ───────────────────
+function StatusPopover({ kind, note, setNote, onConfirm, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const cfg = {
+    inuse:   { title:"Add a note (optional)",   ph:"e.g. Running payroll batch", max:80,  btn:"Confirm",          variant:"primary", required:false },
+    report:  { title:"Describe the issue",      ph:"e.g. Password incorrect, login page changed, account locked, MFA not matching", max:200, btn:"Submit Report", variant:"danger", required:true },
+    resolve: { title:"Resolution note (optional)", ph:"e.g. Password updated, issue fixed", max:160, btn:"Confirm Resolved", variant:"primary", required:false },
+  }[kind];
+  const go = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
+  return (
+    <div style={{ position:"absolute", top:"calc(100% + 8px)", left:0, zIndex:60, width:260, background:"var(--bg-elevated)",
+      border:"1px solid var(--border-default)", borderRadius:12, padding:14, boxShadow:"0 8px 32px rgba(0,0,0,0.5)", animation:"ercSlideDown 0.2s ease" }}>
+      <label style={S.label}>{cfg.title}{cfg.required?" *":""}</label>
+      <textarea value={note} onChange={e=>setNote(e.target.value.slice(0,cfg.max))} placeholder={cfg.ph} autoFocus
+        style={{ ...S.input(), minHeight:60, resize:"vertical", fontSize:13 }} />
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:8 }}>
+        <span style={{ fontSize:11, color:"var(--text-muted)" }}>{note.length}/{cfg.max}</span>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"var(--text-muted)", cursor:"pointer", fontSize:12 }}>Cancel</button>
+          <button onClick={go} disabled={busy || (cfg.required && !note.trim())}
+            style={{ ...S.btn(cfg.variant), padding:"6px 12px", fontSize:12, opacity:(busy||(cfg.required && !note.trim()))?0.5:1 }}>{cfg.btn}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
-  requests, onRequestAccess, toast, onPatch, index }) {
+  requests, onRequestAccess, toast, onPatch, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue, index }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
+  const [popover, setPopover] = useState(null); // 'inuse' | 'report' | 'resolve' | null
+  const [note, setNote] = useState("");
   const hasAccess = canAccess(cred, session.team);
   const isAdmin = session.team === "admin";
   const age = daysSince(cred.updatedAt);
@@ -814,6 +891,25 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
     tr.state === "expired" ? { borderLeft:"4px solid var(--danger)", background:"linear-gradient(135deg, rgba(239,68,68,0.06), rgba(19,32,53,0.85))" } :
     (tr.state === "outside" || tr.state === "wrongday" || tr.state === "expiring") ? { borderLeft:"4px solid var(--warning)" } :
     isFav ? { borderTop:"2px solid rgba(245,184,0,0.4)" } : {};
+
+  // In Use / Not Working status
+  const inUse = !!cred.inUse;
+  const notWorking = !!cred.notWorking;
+  const inUseStale = inUse && hoursSince(cred.inUseSince) >= 8;
+  const iTagged = inUse && cred.inUseByUserId === session.userId;
+  const iReported = notWorking && cred.notWorkingReportedById === session.userId;
+  let statusExtra = {}, leftBorderEl = null;
+  if (notWorking && inUse) {
+    statusExtra = { borderLeft:"3px solid transparent", background:"linear-gradient(135deg, rgba(239,68,68,0.07) 0%, var(--bg-surface) 60%)" };
+    leftBorderEl = <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:"linear-gradient(180deg,#f97316 0%,#ef4444 100%)" }} />;
+  } else if (notWorking) {
+    statusExtra = { borderLeft:"3px solid #ef4444", background:"linear-gradient(135deg, rgba(239,68,68,0.07) 0%, var(--bg-surface) 60%)" };
+  } else if (inUse) {
+    statusExtra = inUseStale
+      ? { borderLeft:"3px solid #f59e0b", background:"linear-gradient(135deg, rgba(245,158,11,0.06) 0%, var(--bg-surface) 60%)" }
+      : { borderLeft:"3px solid #f97316", background:"linear-gradient(135deg, rgba(249,115,22,0.06) 0%, var(--bg-surface) 60%)" };
+  }
+  const finalExtra = (inUse || notWorking) ? { ...cardExtra, ...statusExtra } : cardExtra;
 
   const hasVerify = !!(cred.verifyEmail || cred.verifyText || cred.verifyAuth);
   const flash = (key) => { setCopied(key); setTimeout(()=>setCopied(c=>c===key?null:c), 2000); };
@@ -846,8 +942,9 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
   );
 
   return (
-    <div className="erc-card" style={{ ...S.card(), ...cardExtra, display:"flex", flexDirection:"column", gap:12,
+    <div className="erc-card" style={{ ...S.card(), ...finalExtra, display:"flex", flexDirection:"column", gap:12,
       animation:`ercCardIn 0.3s ease-out both`, animationDelay:`${(index||0)*40}ms` }}>
+      {leftBorderEl}
       {/* Header */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
         <div style={{ display:"flex", gap:10, flex:1, minWidth:0 }}>
@@ -856,9 +953,13 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
           <div style={{ minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
               <span style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)" }}>{cred.portal}</span>
-              {cred.needsRotation && (
-                <span style={{ background:"var(--danger-bg)", color:"#fca5a5", border:"1px solid rgba(239,68,68,0.3)",
-                  borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>Needs Rotation</span>
+              {inUse && (
+                <span style={{ background:"rgba(249,115,22,0.15)", color:"#f97316", border:"1px solid rgba(249,115,22,0.4)",
+                  borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>🟠 In Use</span>
+              )}
+              {notWorking && (
+                <span style={{ background:"rgba(239,68,68,0.15)", color:"#f87171", border:"1px solid rgba(239,68,68,0.4)",
+                  borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>❌ Not Working</span>
               )}
             </div>
             {cred.url && <a href={"https://"+cred.url} target="_blank" rel="noreferrer" style={{ color:"var(--text-secondary)", fontSize:12, textDecoration:"none" }}>🔗 {cred.url}</a>}
@@ -890,6 +991,35 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
       </div>
 
       <div style={{ height:1, background:"var(--border-subtle)" }} />
+
+      {/* In Use banner */}
+      {inUse && (
+        <div style={{ background:inUseStale?"rgba(245,158,11,0.12)":"rgba(249,115,22,0.12)", border:"1px solid "+(inUseStale?"rgba(245,158,11,0.3)":"rgba(249,115,22,0.25)"),
+          borderRadius:8, padding:"8px 12px", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+          <span style={{ flex:1, fontSize:12, color:inUseStale?"#fcd34d":"#fdba74" }}>
+            🟠 <strong>In Use by {cred.inUseBy}</strong> · {timeAgo(cred.inUseSince)}
+            {cred.inUseNote && <span style={{ fontStyle:"italic", color:"var(--text-muted)" }}> · {cred.inUseNote}</span>}
+            {inUseStale && <span style={{ display:"block", color:"#fcd34d", fontWeight:600, marginTop:2 }}>⚠️ Tagged 8h+ ago — may have been forgotten</span>}
+          </span>
+          {(iTagged || isAdmin) && (
+            <button onClick={()=>onReleaseInUse(cred)} style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:11, color:"#fb923c", borderColor:"rgba(249,115,22,0.4)" }}>{(inUseStale&&isAdmin&&!iTagged)?"Force Release":"Release"}</button>
+          )}
+        </div>
+      )}
+      {/* Not Working banner */}
+      {notWorking && (
+        <div style={{ background:"rgba(239,68,68,0.12)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:8, padding:"10px 14px", display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap" }}>
+          <span style={{ fontSize:14 }}>❌</span>
+          <span style={{ flex:1, minWidth:0 }}>
+            <span style={{ fontSize:13, fontWeight:700, color:"#f87171" }}>Not Working</span>
+            <span style={{ display:"block", fontSize:12, color:"var(--text-secondary)" }}>Reported by {cred.notWorkingReportedBy} · {fmtSmartTime(cred.notWorkingAt)}</span>
+            {cred.notWorkingNote && <span style={{ display:"block", fontSize:12, color:"var(--text-muted)", fontStyle:"italic", marginTop:2 }}>{cred.notWorkingNote}</span>}
+          </span>
+          {isAdmin
+            ? <button onClick={()=>{ setNote(""); setPopover("resolve"); }} className="erc-prim" style={{ ...S.btn("primary"), padding:"5px 12px", fontSize:11 }}>Mark Resolved</button>
+            : iReported ? <button onClick={()=>{ setNote(cred.notWorkingNote||""); setPopover("report"); }} style={{ ...S.btn("ghost"), padding:"5px 12px", fontSize:11 }}>Update Note</button> : null}
+        </div>
+      )}
 
       {/* Time status badges/banners */}
       {tr.state==="active" && (
@@ -962,18 +1092,41 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
         Added {timeAgo(cred.addedAt)} by {cred.addedBy}
       </div>
 
+      {/* Status actions (any user with access) */}
+      {hasAccess && (
+        <div style={{ position:"relative", display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
+          {!inUse ? (
+            <button onClick={()=>{ setNote(""); setPopover(p=>p==="inuse"?null:"inuse"); }} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>🟠 Mark In Use</button>
+          ) : (iTagged || isAdmin) ? (
+            <button onClick={()=>onReleaseInUse(cred)} style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12, color:"#fb923c", borderColor:"rgba(249,115,22,0.4)" }}>{(inUseStale&&isAdmin&&!iTagged)?"Force Release":"Release"}</button>
+          ) : (
+            <span title={`${cred.inUseBy} has marked this as in use since ${timeAgo(cred.inUseSince)}`} style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12, opacity:0.55, cursor:"not-allowed" }}>⚠️ In Use</span>
+          )}
+          {!notWorking ? (
+            <button onClick={()=>{ setNote(""); setPopover(p=>p==="report"?null:"report"); }} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>⚠️ Report Issue</button>
+          ) : isAdmin ? (
+            <button onClick={()=>{ setNote(""); setPopover(p=>p==="resolve"?null:"resolve"); }} className="erc-prim" style={{ ...S.btn("primary"), padding:"5px 10px", fontSize:12 }}>✓ Resolved</button>
+          ) : iReported ? (
+            <button onClick={()=>{ setNote(cred.notWorkingNote||""); setPopover(p=>p==="report"?null:"report"); }} style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>View Report</button>
+          ) : (
+            <span style={{ background:"var(--danger-bg)", color:"#fca5a5", border:"1px solid rgba(239,68,68,0.3)", borderRadius:8, padding:"5px 10px", fontSize:12, fontWeight:600 }}>⚠️ Issue Reported</span>
+          )}
+          {popover && (
+            <StatusPopover kind={popover} note={note} setNote={setNote} onClose={()=>setPopover(null)}
+              onConfirm={async ()=>{
+                if (popover==="inuse") await onMarkInUse(cred, note);
+                else if (popover==="report") await onReportIssue(cred, note);
+                else if (popover==="resolve") await onResolveIssue(cred, note);
+                setPopover(null);
+              }} />
+          )}
+        </div>
+      )}
+      {/* Admin controls */}
       {isAdmin && (
         <div style={{ display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
           <button onClick={()=>onEdit(cred)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>✏️ Edit</button>
           <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"5px 10px", fontSize:12 }}>🗑️ Delete</button>
-          <button onClick={()=>onPatch(cred.id,{ needsRotation:!cred.needsRotation })} className="erc-ghost"
-            style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12, color:cred.needsRotation?"#fca5a5":"var(--text-secondary)" }}>
-            🔁 {cred.needsRotation?"Clear Rotation":"Flag Rotation"}
-          </button>
-          <select value={cred.passwordExpiryDays||90} onChange={e=>onPatch(cred.id,{ passwordExpiryDays:+e.target.value })}
-            style={{ ...S.input(), width:"auto", padding:"5px 8px", fontSize:12 }}>
-            {[30,60,90,180].map(d=><option key={d} value={d}>{d}d expiry</option>)}
-          </select>
           {cred.timeRestriction && cred.timeRestriction.enabled && (
             <button onClick={()=>onPatch(cred.id,{ timeRestriction:null })} className="erc-ghost"
               style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12, color:"#fca5a5" }}>⏱️ Clear restriction</button>
@@ -1126,6 +1279,9 @@ function CredModal({ cred, onSave, onClose, session, clients }) {
   const [clientsAll, setClientsAll] = useState(!!(cred && Array.isArray(cred.clientIds) && cred.clientIds.includes("all")));
   const [selClients, setSelClients] = useState(cred && Array.isArray(cred.clientIds) && !cred.clientIds.includes("all") ? cred.clientIds : []);
   const [triedSave, setTriedSave] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const isAdmin = session && session.team === "admin";
+  const history = (cred && cred.notWorkingHistory) || [];
   const [busy, setBusy] = useState(false);
   const [showVerify, setShowVerify] = useState(!!(cred && (cred.verifyEmail || cred.verifyText || cred.verifyAuth)));
   const [showTime, setShowTime] = useState(!!(cred && cred.timeRestriction && cred.timeRestriction.enabled));
@@ -1316,6 +1472,31 @@ function CredModal({ cred, onSave, onClose, session, clients }) {
               {[30,60,90,180].map(d=><option key={d} value={d}>{d} days</option>)}
             </select>
           </div>
+
+          {cred && isAdmin && (
+            <div style={{ marginBottom:14 }}>
+              <CollapseHead open={showHistory} onClick={()=>setShowHistory(v=>!v)}>🗂️ Issue History {history.length>0?`(${history.length})`:""}</CollapseHead>
+              {showHistory && (
+                <div style={{ padding:"14px 2px 2px", animation:"ercSlideDown 0.2s ease" }}>
+                  {history.length===0
+                    ? <p style={{ color:"var(--text-muted)", fontSize:13 }}>No issues reported for this credential.</p>
+                    : <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                        {history.slice().reverse().map((h,i)=>(
+                          <div key={i} style={{ display:"flex", gap:10 }}>
+                            <span style={{ width:8, height:8, borderRadius:"50%", flexShrink:0, marginTop:5, background:h.resolved?"#10b981":"#ef4444" }} />
+                            <div style={{ fontSize:12 }}>
+                              <div style={{ color:"#fca5a5" }}>Reported by {h.reportedBy} · {fmtSmartTime(h.reportedAt)}</div>
+                              {h.note && <div style={{ color:"var(--text-muted)", fontStyle:"italic" }}>{h.note}</div>}
+                              {h.resolved && <div style={{ color:"#34d399", marginTop:2 }}>Resolved by {h.resolvedBy} · {fmtSmartTime(h.resolvedAt)}{h.resolveNote?` · ${h.resolveNote}`:""}</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>}
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
             <button type="button" onClick={onClose} className="erc-ghost" style={S.btn("ghost")}>Cancel</button>
             <button type="submit" disabled={busy} className="erc-prim" style={{ ...S.btn("primary"), opacity:busy?0.7:1 }}>{cred?"Save Changes":"Add Credential"}</button>
@@ -1921,6 +2102,8 @@ function CredentialsTab({ session, toast }) {
   const [clientFilter, setClientFilter] = useState("All");
   const [portalFilter, setPortalFilter] = useState([]);
   const [restrictedOnly, setRestrictedOnly] = useState(false);
+  const [inUseOnly, setInUseOnly] = useState(false);
+  const [notWorkingOnly, setNotWorkingOnly] = useState(false);
   const [sort, setSort] = useState("A-Z");
   const [editCred, setEditCred] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -1954,10 +2137,8 @@ function CredentialsTab({ session, toast }) {
   const clientNames = ["All",...[...new Set(creds.flatMap(c=>c.clientNames||[]).filter(n=>n&&n!=="All Clients"))].sort()];
   const portalNames = [...new Set(creds.map(c=>c.portal))].sort();
 
-  const rotationWarning = (isAdmin?creds:accessible).filter(c=>{
-    const age=daysSince(c.updatedAt);
-    return c.needsRotation||((c.passwordExpiryDays||90)-age)<=7;
-  });
+  const inUseList = (isAdmin?creds:accessible).filter(c=>c.inUse);
+  const notWorkingList = (isAdmin?creds:accessible).filter(c=>c.notWorking);
 
   const restrictBase = isAdmin?creds:accessible;
   const restrictedCount = restrictBase.filter(c=>isRestrictedState(evalTimeRestriction(c.timeRestriction).state)).length;
@@ -1971,7 +2152,9 @@ function CredentialsTab({ session, toast }) {
     const mcl=clientFilter==="All"||(c.clientIds||[]).includes("all")||(c.clientNames||[]).includes(clientFilter);
     const mp=portalFilter.length===0||portalFilter.includes(c.portal);
     const mr=!restrictedOnly||(c.timeRestriction&&c.timeRestriction.enabled);
-    return ms&&mcl&&mp&&mr;
+    const miu=!inUseOnly||c.inUse;
+    const mnw=!notWorkingOnly||c.notWorking;
+    return ms&&mcl&&mp&&mr&&miu&&mnw;
   }).sort((a,b)=>{
     if(sort==="A-Z") return a.portal.localeCompare(b.portal);
     if(sort==="Newest") return new Date(b.addedAt)-new Date(a.addedAt);
@@ -2019,10 +2202,51 @@ function CredentialsTab({ session, toast }) {
     catch (e) { toast(e.message,"error"); }
   };
 
+  const handleMarkInUse = async (cred, note) => {
+    try {
+      await setInUse(cred.id, true, session.userName, session.userId, note||null);
+      logAudit({ userId:session.userId, userName:session.userName, action:"mark_in_use", credentialId:cred.id, credentialName:cred.portal, detail:note||undefined });
+      await loadAll();
+    } catch (e) { toast(e.message && e.message.includes("function")? "Run migration_7_status_flags.sql in Supabase first." : e.message,"error"); }
+  };
+  const handleReleaseInUse = async (cred) => {
+    try {
+      await setInUse(cred.id, false, null, null, null);
+      logAudit({ userId:session.userId, userName:session.userName, action:"release_in_use", credentialId:cred.id, credentialName:cred.portal });
+      toast("Released — "+cred.portal+" is now free","info"); await loadAll();
+    } catch (e) { toast(e.message,"error"); }
+  };
+  const handleReportIssue = async (cred, note) => {
+    try {
+      const entry = { reportedBy:session.userName, reportedById:session.userId, reportedAt:new Date().toISOString(), note:note||"", resolved:false, resolvedAt:null, resolvedBy:null };
+      const history = [...(cred.notWorkingHistory||[]), entry];
+      await setNotWorking(cred.id, true, session.userName, session.userId, note||null, history);
+      logAudit({ userId:session.userId, userName:session.userName, action:"report_not_working", credentialId:cred.id, credentialName:cred.portal, detail:note||undefined });
+      toast("⚠️ Issue reported — admin has been notified","info"); await loadAll();
+    } catch (e) { toast(e.message && e.message.includes("function")? "Run migration_7_status_flags.sql in Supabase first." : e.message,"error"); }
+  };
+  const handleResolveIssue = async (cred, note) => {
+    try {
+      const hist = (cred.notWorkingHistory||[]).map(x=>({...x}));
+      for (let i=hist.length-1; i>=0; i--) { if (!hist[i].resolved) { hist[i].resolved=true; hist[i].resolvedAt=new Date().toISOString(); hist[i].resolvedBy=session.userName; hist[i].resolveNote=note||""; break; } }
+      await setNotWorking(cred.id, false, null, null, null, hist);
+      logAudit({ userId:session.userId, userName:session.userName, action:"resolve_not_working", credentialId:cred.id, credentialName:cred.portal, detail:note||undefined });
+      toast("✓ Marked as resolved","success"); await loadAll();
+    } catch (e) { toast(e.message,"error"); }
+  };
+
   const handleFileImport = e => {
     const file=e.target.files[0]; if(!file) return;
     const reader=new FileReader();
-    reader.onload=ev=>{ const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array"}); const ws=wb.Sheets[wb.SheetNames[0]]; setImportRows(XLSX.utils.sheet_to_json(ws,{defval:""})); };
+    reader.onload=ev=>{
+      const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array"});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      // Find the header row (decorated templates have title/instruction rows above it).
+      const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+      let hdr=aoa.findIndex(r=>Array.isArray(r)&&r.some(c=>String(c).trim().toLowerCase()==="portal"));
+      if(hdr<0) hdr=0;
+      setImportRows(XLSX.utils.sheet_to_json(ws,{range:hdr,defval:""}));
+    };
     reader.readAsArrayBuffer(file); e.target.value="";
   };
 
@@ -2083,7 +2307,7 @@ function CredentialsTab({ session, toast }) {
     };
     const trActive = (c)=>{ const st=evalTimeRestriction(c.timeRestriction).state;
       if(st==="none") return ""; return (st==="active"||st==="schedule"||st==="expiring")?"Yes":"No"; };
-    const h=["Portal","URL","Username","Password","Clients","Client Codes","Privilege Level","Verify Email","Verify Text","Verify Auth","Teams","Expiry Days","Days Since Updated","Needs Rotation","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
+    const h=["Portal","URL","Username","Password","Clients","Client Codes","Privilege Level","Verify Email","Verify Text","Verify Auth","Teams","Expiry Days","Days Since Updated","In Use","In Use By","In Use Since","In Use Note","Not Working","Reported By","Reported At","Issue Note","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
     const rows=all.map(c=>{
       const isAll=(c.clientIds||[]).includes("all");
       const cl = isAll ? Object.values(clientsById) : (c.clientIds||[]).map(id=>clientsById[id]).filter(Boolean);
@@ -2093,7 +2317,9 @@ function CredentialsTab({ session, toast }) {
       return [c.portal,c.url,c.username,c.password,
         names, codes, priv,
         c.verifyEmail||"",c.verifyText||"",c.verifyAuth||"",
-        c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",
+        c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),
+        c.inUse?"Yes":"No", c.inUseBy||"", c.inUseSince?new Date(c.inUseSince).toLocaleString():"", c.inUseNote||"",
+        c.notWorking?"Yes":"No", c.notWorkingReportedBy||"", c.notWorkingAt?new Date(c.notWorkingAt).toLocaleString():"", c.notWorkingNote||"",
         trType(c),trDetails(c),trActive(c),c.addedBy,c.addedAt]; });
     const ws1=XLSX.utils.aoa_to_sheet([h,...rows]); ws1["!cols"]=h.map(()=>({wch:20}));
     const teams=dctx?dctx.deptIds:DEFAULT_DEPTS.map(d=>d.id);
@@ -2105,23 +2331,121 @@ function CredentialsTab({ session, toast }) {
     XLSX.writeFile(wb,"EagleRCM-Export.xlsx"); toast("Exported!","success");
   };
 
-  const handleTemplate = () => {
-    const h=["Portal Name","URL","Username","Password","Client Name","Teams","Expiry Days","Verify Email","Verify Text","Verify Auth","Time Restriction Type","Window Days","Window Start","Window End","Expiry Date","Schedule Note"];
-    const ex=[
-      ["GitHub","github.com","org-dev-team","ghp_xxx","TechCorp Solutions","engineering",90,"","","Engineering Authy","window","Mon Tue Wed Thu Fri","09:00","18:00","",""],
-      ["Figma","figma.com","design@co.com","figpass","Bright Agency","design,marketing",60,"design@co.com inbox","","","","","","","",""],
-      ["Notion","notion.so","team@co.com","notionpw","Internal","all",90,"","+1 (555) 000-0000","","","","","","",""],
-    ];
-    const ws=XLSX.utils.aoa_to_sheet([h,...ex]); ws["!cols"]=h.map(()=>({wch:20}));
-    const info=XLSX.utils.aoa_to_sheet([
-      ["Eagle RCM — import instructions"],
-      ["Duplicate detection: portal + username match triggers an overwrite prompt."],
-      ["Client Name must match an existing active client exactly."],
-      ["Time Restriction Type: window | expiry | schedule (leave blank for none)."],
-    ]);
-    const wb=XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb,ws,"Template"); XLSX.utils.book_append_sheet(wb,info,"Instructions");
-    XLSX.writeFile(wb,"EagleRCM-Template.xlsx"); toast("Template downloaded!","success");
+  const handleTemplate = async () => {
+    try {
+      const GOLD="FFD4AF37", GOLD_DK="FF8A6D1F", INK="FF0B0F16", PAPER="FFFFFFFF", ZEBRA="FFF6F3EC", REF_BG="FFFBF8F0";
+      const teamList=(dctx?dctx.list:DEFAULT_DEPTS).map(d=>({id:d.id,label:d.label}));
+      const clientList=clients.filter(c=>c.active).map(c=>c.name);
+      const expiryOpts=["30","60","90","180"];
+      const trOpts=["window","expiry","schedule"];
+      const windowPresets=["Mon Tue Wed Thu Fri","Sat Sun","Mon Tue Wed Thu Fri Sat Sun","Mon Wed Fri"];
+      const cols=[
+        { h:"Portal",                w:18, note:"Required. Name of the service/portal." },
+        { h:"URL",                   w:24, note:"Login URL (optional)." },
+        { h:"Username",              w:22, note:"Required. Login username / email." },
+        { h:"Password",              w:20, note:"Required. The credential secret." },
+        { h:"Client Name",           w:24, note:"Pick from list, or comma-separate several. 'all' = every client." },
+        { h:"Teams",                 w:22, note:"Pick a team id, comma-separate several, or 'all'." },
+        { h:"Expiry Days",           w:13, note:"Password rotation cadence." },
+        { h:"Verify Email",          w:22, note:"2FA recovery email (optional)." },
+        { h:"Verify Text",           w:18, note:"2FA recovery phone (optional)." },
+        { h:"Verify Auth",           w:18, note:"Authenticator label (optional)." },
+        { h:"Time Restriction Type", w:18, note:"window / expiry / schedule — blank = always on." },
+        { h:"Window Days",           w:24, note:"For 'window': days the login is allowed." },
+        { h:"Window Start",          w:13, note:"For 'window': start time, e.g. 09:00." },
+        { h:"Window End",            w:13, note:"For 'window': end time, e.g. 18:00." },
+        { h:"Expiry Date",           w:14, note:"For 'expiry': YYYY-MM-DD." },
+        { h:"Schedule Note",         w:26, note:"For 'schedule': free-text rule." },
+      ];
+      const NC=cols.length, lastCol=String.fromCharCode(64+NC); // up to Z (16 cols => P)
+      const samples=[
+        ["GitHub","github.com","org-dev-team","ghp_xxxxxxxx",clientList[0]||"TechCorp Solutions",teamList[0]?teamList[0].id:"engineering","90","","","Engineering Authy","window","Mon Tue Wed Thu Fri","09:00","18:00","",""],
+        ["Figma","figma.com","design@co.com","figpass123",clientList[1]||clientList[0]||"Bright Agency","all","60","design@co.com inbox","","","","","","","",""],
+        ["Notion","notion.so","team@co.com","notionpw","all","all","90","","+1 (555) 000-0000","","schedule","","","","","Business hours only — see ops"],
+      ];
+
+      const wb=new ExcelJS.Workbook();
+      wb.creator="Eagle RCM"; wb.created=new Date();
+
+      // ── Reference sheet (holds the validation lists + a guide) ──────────────
+      const ref=wb.addWorksheet("Reference",{properties:{tabColor:{argb:GOLD}}});
+      ref.columns=[{width:30},{width:18},{width:14},{width:16},{width:28},{width:2},{width:60}];
+      const refTitle=ref.getCell("A1"); refTitle.value="Reference — allowed values"; ref.mergeCells("A1:E1");
+      refTitle.font={bold:true,size:13,color:{argb:INK}}; refTitle.fill={type:"pattern",pattern:"solid",fgColor:{argb:GOLD}};
+      refTitle.alignment={vertical:"middle"}; ref.getRow(1).height=22;
+      const refHeads=["Clients","Teams","Expiry Days","Restriction","Window Days"];
+      refHeads.forEach((t,i)=>{ const cell=ref.getCell(2,i+1); cell.value=t;
+        cell.font={bold:true,color:{argb:PAPER}}; cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:GOLD_DK}}; });
+      const refData=[["all",...clientList],["all",...teamList.map(t=>t.id)],expiryOpts,trOpts,windowPresets];
+      refData.forEach((listVals,colIdx)=>{ listVals.forEach((v,r)=>{ const cell=ref.getCell(3+r,colIdx+1);
+        cell.value=v; cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:REF_BG}}; cell.font={size:11}; }); });
+      // team id → label guide + field notes in column G
+      const guide=["Team ids → labels:",...teamList.map(t=>`  • ${t.id}  =  ${t.label}`),"",
+        "Field notes:",...cols.map(c=>`  • ${c.h}: ${c.note}`),"",
+        "Import: portal + username match prompts an overwrite."];
+      guide.forEach((line,i)=>{ const cell=ref.getCell(1+i,7); cell.value=line;
+        cell.font={size:11,bold:i===0||line==="Field notes:",color:{argb:INK}}; cell.alignment={wrapText:true}; });
+
+      const colLetter=i=>String.fromCharCode(65+i); // 0->A
+      const rng=(letter,n)=>`Reference!$${letter}$3:$${letter}$${2+n}`;
+      const lists={
+        4: rng(colLetter(0),refData[0].length),   // Client Name
+        5: rng(colLetter(1),refData[1].length),   // Teams
+        6: rng(colLetter(2),refData[2].length),   // Expiry Days
+        10: rng(colLetter(3),refData[3].length),  // Time Restriction Type
+        11: rng(colLetter(4),refData[4].length),  // Window Days
+      };
+
+      // ── Import Template sheet (first sheet, so it re-imports) ────────────────
+      const ws=wb.addWorksheet("Import Template",{properties:{tabColor:{argb:GOLD_DK}},views:[{state:"frozen",ySplit:3}]});
+      ws.columns=cols.map(c=>({width:c.w}));
+      // Row 1 — title banner
+      ws.mergeCells(1,1,1,NC); const tcell=ws.getCell("A1");
+      tcell.value="EAGLE RCM  —  Credential Import Template";
+      tcell.font={bold:true,size:15,color:{argb:GOLD}}; tcell.fill={type:"pattern",pattern:"solid",fgColor:{argb:INK}};
+      tcell.alignment={vertical:"middle",horizontal:"left",indent:1}; ws.getRow(1).height=30;
+      // Row 2 — instructions banner
+      ws.mergeCells(2,1,2,NC); const icell=ws.getCell("A2");
+      icell.value="Fill one credential per row. Use the dropdowns where shown. Required: Portal, Username, Password. See the Reference tab for team ids & notes.";
+      icell.font={italic:true,size:10,color:{argb:INK}}; icell.fill={type:"pattern",pattern:"solid",fgColor:{argb:GOLD}};
+      icell.alignment={vertical:"middle",horizontal:"left",indent:1,wrapText:true}; ws.getRow(2).height=26;
+      // Row 3 — column headers
+      const hr=ws.getRow(3); hr.height=20;
+      cols.forEach((c,i)=>{ const cell=hr.getCell(i+1); cell.value=c.h;
+        cell.font={bold:true,color:{argb:PAPER}}; cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:GOLD_DK}};
+        cell.alignment={vertical:"middle",horizontal:"center"};
+        cell.border={bottom:{style:"thin",color:{argb:GOLD}}};
+        cell.note=c.note; });
+      // Rows 4..53 — 50 data rows (3 prefilled samples)
+      const TOTAL=50;
+      for(let r=0;r<TOTAL;r++){
+        const excelRow=4+r; const row=ws.getRow(excelRow); row.height=16;
+        const sample=samples[r]; const zebra=r%2===1;
+        for(let cI=0;cI<NC;cI++){
+          const cell=row.getCell(cI+1);
+          if(sample) cell.value=sample[cI];
+          if(zebra) cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:ZEBRA}};
+          cell.font={size:11,color:{argb:INK}};
+          cell.alignment={vertical:"middle"};
+        }
+      }
+      // Data validations down all 50 rows
+      Object.entries(lists).forEach(([colIdx,formula])=>{
+        const L=colLetter(+colIdx);
+        for(let excelRow=4;excelRow<4+TOTAL;excelRow++){
+          ws.getCell(`${L}${excelRow}`).dataValidation={
+            type:"list", allowBlank:true, formulae:[formula], showErrorMessage:false,
+          };
+        }
+      });
+
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+      a.download="EagleRCM-Template.xlsx"; document.body.appendChild(a); a.click();
+      a.remove(); URL.revokeObjectURL(a.href);
+      toast("Template downloaded!","success");
+    } catch(e){ toast(e.message||"Template failed","error"); }
   };
 
   const stats = {
@@ -2140,17 +2464,26 @@ function CredentialsTab({ session, toast }) {
 
   return (
     <div className="erc-page">
-      {(rotationWarning.length>0 || expiredCount>0) && !warnDismissed && (
-        <div style={{ background:"linear-gradient(90deg, rgba(245,158,11,0.12) 0%, rgba(245,158,11,0.06) 100%)",
-          borderLeft:"3px solid var(--warning)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:12, padding:"14px 18px",
-          marginBottom:20, display:"flex", alignItems:"center", gap:12 }}>
-          <span style={{ width:32, height:32, borderRadius:"50%", background:"rgba(245,158,11,0.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>⚠️</span>
-          <span style={{ color:"#fcd34d", fontWeight:600, fontSize:14, flex:1 }}>
-            {rotationWarning.length>0 && `${rotationWarning.length} credential(s) need rotation or expiring within 7 days.`}
-            {rotationWarning.length>0 && expiredCount>0 && " "}
-            {expiredCount>0 && `${expiredCount} time-restricted credential(s) have expired.`}
+      {notWorkingList.length>0 && (
+        <div style={{ background:"linear-gradient(90deg, rgba(239,68,68,0.12) 0%, rgba(239,68,68,0.05) 100%)",
+          borderLeft:"3px solid #ef4444", border:"1px solid rgba(239,68,68,0.25)", borderRadius:12, padding:"12px 16px",
+          marginBottom:12, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+          <span style={{ width:30, height:30, borderRadius:"50%", background:"rgba(239,68,68,0.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>❌</span>
+          <span style={{ color:"#fca5a5", fontWeight:600, fontSize:14, flex:1 }}>
+            {notWorkingList.length} credential(s) reported as not working — {notWorkingList.slice(0,3).map(c=>c.portal).join(", ")}{notWorkingList.length>3?`, +${notWorkingList.length-3} more`:""}
           </span>
-          <button onClick={()=>setWarnDismissed(true)} style={{ background:"none", border:"none", color:"var(--text-muted)", cursor:"pointer", fontSize:16 }}>✕</button>
+          <button onClick={()=>{ setNotWorkingOnly(true); setInUseOnly(false); setRestrictedOnly(false); }} style={{ background:"none", border:"none", color:"#f87171", cursor:"pointer", fontSize:13, fontWeight:600 }}>View All →</button>
+        </div>
+      )}
+      {inUseList.length>0 && (
+        <div style={{ background:"linear-gradient(90deg, rgba(249,115,22,0.12) 0%, rgba(249,115,22,0.05) 100%)",
+          borderLeft:"3px solid #f97316", border:"1px solid rgba(249,115,22,0.25)", borderRadius:12, padding:"12px 16px",
+          marginBottom:20, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+          <span style={{ width:30, height:30, borderRadius:"50%", background:"rgba(249,115,22,0.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>🟠</span>
+          <span style={{ color:"#fdba74", fontWeight:600, fontSize:14, flex:1 }}>
+            {inUseList.length} credential(s) currently in use by your team — {inUseList.slice(0,3).map(c=>`${c.portal} (${c.inUseBy})`).join(", ")}{inUseList.length>3?`, +${inUseList.length-3} more`:""}
+          </span>
+          <button onClick={()=>{ setInUseOnly(true); setNotWorkingOnly(false); setRestrictedOnly(false); }} style={{ background:"none", border:"none", color:"#fb923c", cursor:"pointer", fontSize:13, fontWeight:600 }}>View All →</button>
         </div>
       )}
 
@@ -2185,7 +2518,8 @@ function CredentialsTab({ session, toast }) {
             {pinned.map((c,i)=>(
               <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
                 onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={true} requests={requests}
-                onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
+                onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
+              onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
             ))}
           </div>
         </div>
@@ -2202,6 +2536,8 @@ function CredentialsTab({ session, toast }) {
         </select>
         <PortalFilter portals={portalNames} creds={baseList} selected={portalFilter} onChange={setPortalFilter} />
         <button onClick={()=>setRestrictedOnly(v=>!v)} style={catPill(restrictedOnly)}>⏰ Time-Restricted</button>
+        <button onClick={()=>setInUseOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(inUseOnly?"#f97316":"var(--border-default)"), background:inUseOnly?"rgba(249,115,22,0.15)":"transparent", color:inUseOnly?"#f97316":"var(--text-secondary)" }}>🟠 In Use</button>
+        <button onClick={()=>setNotWorkingOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(notWorkingOnly?"#ef4444":"var(--border-default)"), background:notWorkingOnly?"rgba(239,68,68,0.15)":"transparent", color:notWorkingOnly?"#f87171":"var(--text-secondary)" }}>❌ Not Working</button>
         {isAdmin && (
           <div style={{ display:"flex", gap:8, marginLeft:"auto", flexWrap:"wrap" }}>
             <label className="erc-ghost" style={{ ...S.btn("ghost"), cursor:"pointer" }}>
@@ -2224,7 +2560,7 @@ function CredentialsTab({ session, toast }) {
       <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14 }}>{filtered.length} credential(s) found</div>
 
       {filtered.length===0 ? (
-        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly
+        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly||inUseOnly||notWorkingOnly
           ? <EmptyState icon="🔍" title="Nothing matched" sub="Try different search terms or clear filters" />
           : <EmptyState icon="🔑" title="No credentials yet" sub="Add your first credential to get started"
               action={isAdmin && <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>} />
@@ -2233,7 +2569,8 @@ function CredentialsTab({ session, toast }) {
           {unpinned.map((c,i)=>(
             <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
               onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={false} requests={requests}
-              onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
+              onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
+              onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
           ))}
         </div>
       )}
@@ -2795,10 +3132,10 @@ function AuditTab({ session, toast }) {
   useEffect(() => { listAudit().then(setAudit).catch(e=>toast(e.message,"error")).finally(()=>setLoading(false)); }, [toast]);
 
   const actionColors = {
-    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981", client_created:"#10b981", user_approved_registration:"#10b981",
-    login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa",
-    edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b", client_edited:"#f59e0b", bulk_import_overwrite:"#f59e0b",
-    delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444", client_archived:"#ef4444", user_rejected_registration:"#ef4444",
+    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981", client_created:"#10b981", user_approved_registration:"#10b981", resolve_not_working:"#10b981",
+    login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa", release_in_use:"#60a5fa",
+    edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b", client_edited:"#f59e0b", bulk_import_overwrite:"#f59e0b", mark_in_use:"#f97316",
+    delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444", client_archived:"#ef4444", user_rejected_registration:"#ef4444", report_not_working:"#ef4444",
   };
   const dateMs = { Today:86400000, "7d":7*86400000, "30d":30*86400000, All:Infinity };
   const now = Date.now();
@@ -3024,9 +3361,9 @@ function Dashboard({ user, onLogout }) {
   }, [tab, isAdmin, pendingCount]);
 
   const gridBg = {
-    minHeight:"100vh", background:"var(--bg-base)",
-    backgroundImage:"linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)",
-    backgroundSize:"40px 40px",
+    minHeight:"100vh", background:"transparent",
+    backgroundImage:"radial-gradient(circle at 1px 1px, rgba(255,255,255,0.022) 1px, transparent 0)",
+    backgroundSize:"32px 32px",
   };
 
   return (
@@ -3035,11 +3372,13 @@ function Dashboard({ user, onLogout }) {
       <GlobalStyles />
       <ToastContainer toasts={toasts} />
 
-      <header style={{ background:"rgba(8,15,30,0.95)", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
+      <header style={{ background:"rgba(7,10,16,0.92)", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
         padding:"0 24px", height:64, display:"flex", alignItems:"center", justifyContent:"space-between",
         position:"sticky", top:0, zIndex:100, borderBottom:"1px solid var(--border-subtle)" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ color:"var(--text-primary)", fontWeight:700, fontSize:16, letterSpacing:-0.3 }}>Eagle RCM</span>
+        <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+          <span className="erc-logo-gold" style={{ fontWeight:900, fontSize:16, letterSpacing:1.5 }}>EAGLE</span>
+          <span style={{ width:1, height:15, background:"var(--border-strong)" }} />
+          <span style={{ color:"var(--text-primary)", fontWeight:300, fontSize:16, letterSpacing:3 }}>RCM</span>
         </div>
 
         {TABS.length>1 && (

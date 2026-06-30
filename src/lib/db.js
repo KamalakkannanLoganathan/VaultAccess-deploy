@@ -15,7 +15,11 @@ const credFromRow = (r) => ({
   timeRestriction: r.time_restriction || null,
   teams: r.all_teams ? "all" : (r.teams || []),
   passwordExpiryDays: r.password_expiry_days || 90,
-  needsRotation: !!r.needs_rotation, rotationNote: r.rotation_note || "",
+  inUse: !!r.in_use, inUseBy: r.in_use_by || null, inUseByUserId: r.in_use_by_user_id || null,
+  inUseSince: r.in_use_since || null, inUseNote: r.in_use_note || null,
+  notWorking: !!r.not_working, notWorkingReportedBy: r.not_working_reported_by || null,
+  notWorkingReportedById: r.not_working_reported_by_id || null, notWorkingAt: r.not_working_at || null,
+  notWorkingNote: r.not_working_note || null, notWorkingHistory: Array.isArray(r.not_working_history) ? r.not_working_history : [],
   addedBy: r.added_by || "", addedAt: r.added_at, updatedAt: r.updated_at,
 });
 
@@ -30,7 +34,6 @@ const credToRow = (c) => {
     time_restriction: c.timeRestriction || null,
     all_teams: all, teams: all ? [] : (Array.isArray(c.teams) ? c.teams : []),
     password_expiry_days: c.passwordExpiryDays || 90,
-    needs_rotation: !!c.needsRotation, rotation_note: c.rotationNote || "",
   };
 };
 
@@ -113,7 +116,6 @@ export async function updateCredential(id, c) {
 
 export async function patchCredential(id, patch) {
   const row = { updated_at: new Date().toISOString() };
-  if ("needsRotation" in patch) row.needs_rotation = patch.needsRotation;
   if ("passwordExpiryDays" in patch) row.password_expiry_days = patch.passwordExpiryDays;
   if ("timeRestriction" in patch) row.time_restriction = patch.timeRestriction;
   if ("teams" in patch) {
@@ -122,6 +124,21 @@ export async function patchCredential(id, patch) {
     row.teams = all ? [] : patch.teams;
   }
   const { error } = await supabase.from("credentials").update(row).eq("id", id);
+  if (error) throw error;
+}
+
+// Status flags — go through SECURITY DEFINER RPCs so non-admin members can
+// set status without being able to edit passwords/teams.
+export async function setInUse(credId, inUse, by, byId, note) {
+  const { error } = await supabase.rpc("cred_set_in_use", {
+    cred_id: credId, p_in_use: inUse, p_by: by || null, p_by_id: byId || null, p_note: note || null,
+  });
+  if (error) throw error;
+}
+export async function setNotWorking(credId, notWorking, by, byId, note, history) {
+  const { error } = await supabase.rpc("cred_set_not_working", {
+    cred_id: credId, p_not_working: notWorking, p_by: by || null, p_by_id: byId || null, p_note: note || null, p_history: history || [],
+  });
   if (error) throw error;
 }
 
