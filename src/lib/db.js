@@ -7,7 +7,9 @@ import { supabase } from "./supabase";
 // ─── row <-> app mappers ────────────────────────────────────────────────────
 const credFromRow = (r) => ({
   id: r.id, portal: r.portal, url: r.url || "", username: r.username, password: r.password,
-  clientId: r.client_id || null, clientName: r.client_name || "",
+  // multi-client; fall back to the legacy single client_id/client_name if present
+  clientIds: (Array.isArray(r.client_ids) && r.client_ids.length) ? r.client_ids : (r.client_id ? [String(r.client_id)] : []),
+  clientNames: (Array.isArray(r.client_names) && r.client_names.length) ? r.client_names : (r.client_name ? [r.client_name] : []),
   authMethod: r.auth_method || "None", authLocation: r.auth_location || "",
   verifyEmail: r.verify_email || "", verifyText: r.verify_text || "", verifyAuth: r.verify_auth || "",
   timeRestriction: r.time_restriction || null,
@@ -21,7 +23,8 @@ const credToRow = (c) => {
   const all = c.teams === "all";
   return {
     portal: c.portal, url: c.url || "", username: c.username, password: c.password,
-    client_id: c.clientId || null, client_name: c.clientName || "",
+    client_ids: Array.isArray(c.clientIds) ? c.clientIds : [],
+    client_names: Array.isArray(c.clientNames) ? c.clientNames : [],
     auth_method: c.authMethod || "None", auth_location: c.authLocation || "",
     verify_email: c.verifyEmail || "", verify_text: c.verifyText || "", verify_auth: c.verifyAuth || "",
     time_restriction: c.timeRestriction || null,

@@ -47,6 +47,18 @@ const PRIVILEGE_META = {
   confidential: { label:"Confidential", color:"#ef4444", desc:"Admin eyes only" },
 };
 const autoCode = (name) => String(name||"").replace(/[^A-Za-z]/g,"").toUpperCase().slice(0,3) || "CLT";
+const PRIV_RANK = { standard:0, restricted:1, confidential:2 };
+const PRIV_ORDER = ["standard","restricted","confidential"];
+const highestPrivilege = (clientList) => {
+  let best = 0;
+  for (const c of clientList) { if (c && PRIV_RANK[c.privilegeLevel] > best) best = PRIV_RANK[c.privilegeLevel]; }
+  return PRIV_ORDER[best];
+};
+// Resolve the clients assigned to a credential (handles the "all" sentinel).
+const resolveClients = (cred, clientsById) => {
+  if ((cred.clientIds||[]).includes("all")) return Object.values(clientsById||{});
+  return (cred.clientIds||[]).map(id => clientsById && clientsById[id]).filter(Boolean);
+};
 const ADMIN_STYLE = { bg:"rgba(251,191,36,0.12)", color:"#fbbf24", border:"rgba(251,191,36,0.35)" };
 const FALLBACK_STYLE = { bg:"rgba(255,255,255,0.06)", color:"var(--text-secondary)", border:"var(--border-default)" };
 const hexA = (hex, a) => {
@@ -744,7 +756,40 @@ function InactivityModal({ countdown, onStay, onLogout }) {
 }
 
 // ─── Credential Card ──────────────────────────────────────────────────────────
-function CredentialCard({ cred, session, client, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
+// ─── Client badges (multi-client, with +X more tooltip) ──────────────────────
+function ClientBadges({ cred, clientsById, pulse }) {
+  const [hover, setHover] = useState(false);
+  const ids = cred.clientIds || [];
+  const items = ids.map((id,i) => { const c = clientsById && clientsById[id];
+    return { name: c ? c.name : ((cred.clientNames && cred.clientNames[i]) || id), color: c ? c.color : "#64748b" }; });
+  if (items.length === 0) return null;
+  const dot = (color) => <span style={{ width:7, height:7, borderRadius:"50%", background:color, animation: pulse?"ercDotPulse 3s ease-in-out infinite":"none" }} />;
+  const pill = (it, key) => (
+    <span key={key} style={{ background:hexA(it.color,0.15), color:it.color, border:"1px solid "+hexA(it.color,0.4),
+      borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600, display:"inline-flex", alignItems:"center", gap:5 }}>{dot(it.color)}{it.name}</span>
+  );
+  if (items.length === 1) return pill(items[0], 0);
+  const shown = items.slice(0,2), rest = items.slice(2);
+  return (
+    <>
+      {shown.map((it,i)=>pill(it,i))}
+      {rest.length>0 && (
+        <span style={{ position:"relative", display:"inline-flex" }} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}>
+          <span style={{ background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid var(--border-default)",
+            borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600, cursor:"default" }}>+{rest.length} more</span>
+          {hover && (
+            <span style={{ position:"absolute", top:"calc(100% + 4px)", left:0, zIndex:50, background:"var(--bg-elevated)",
+              border:"1px solid var(--border-default)", borderRadius:8, padding:"6px 10px", fontSize:12, whiteSpace:"nowrap", boxShadow:"0 8px 24px rgba(0,0,0,0.4)" }}>
+              {items.map((it,i)=>(<span key={i} style={{ display:"flex", alignItems:"center", gap:6, padding:"2px 0", color:"var(--text-primary)" }}>{dot(it.color)}{it.name}</span>))}
+            </span>
+          )}
+        </span>
+      )}
+    </>
+  );
+}
+
+function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
   requests, onRequestAccess, toast, onPatch, index }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
@@ -752,10 +797,12 @@ function CredentialCard({ cred, session, client, onEdit, onDelete, onCopy, onCop
   const isAdmin = session.team === "admin";
   const age = daysSince(cred.updatedAt);
   const ageColor = age < 30 ? "var(--success)" : age < 60 ? "var(--warning)" : "var(--danger)";
-  const privilege = client ? client.privilegeLevel : "standard";
+  const isAllClients = (cred.clientIds||[]).includes("all");
+  const myClients = resolveClients(cred, clientsById);
+  const privilege = highestPrivilege(myClients);
   const confidentialBlock = privilege === "confidential" && !isAdmin;
   const restrictedPw = privilege === "restricted" && !isAdmin;
-  const clientColor = client ? client.color : "#64748b";
+  const clientColor = isAllClients ? "#f5b800" : (myClients[0] ? myClients[0].color : "#64748b");
   const headTint = hexA(clientColor, 0.15);
   const pendingReq = requests.find(r => r.credentialId===cred.id && r.requesterId===session.userId && r.status==="pending");
   const expiryDays = cred.passwordExpiryDays || 90;
@@ -816,14 +863,15 @@ function CredentialCard({ cred, session, client, onEdit, onDelete, onCopy, onCop
             </div>
             {cred.url && <a href={"https://"+cred.url} target="_blank" rel="noreferrer" style={{ color:"var(--text-secondary)", fontSize:12, textDecoration:"none" }}>🔗 {cred.url}</a>}
             <div style={{ marginTop:4, display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
-              {(client || cred.clientName) && (
-                <span style={{ background:hexA(clientColor,0.15), color:clientColor, border:"1px solid "+hexA(clientColor,0.4),
+              {isAllClients ? (
+                <span style={{ background:"rgba(245,184,0,0.12)", color:"#f5b800", border:"1px solid rgba(245,184,0,0.3)",
                   borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600, display:"inline-flex", alignItems:"center", gap:5 }}>
-                  <span style={{ width:7, height:7, borderRadius:"50%", background:clientColor,
-                    animation: privilege==="confidential"?"ercDotPulse 3s ease-in-out infinite":"none" }} />
-                  {client ? client.name : cred.clientName}
+                  <span style={{ width:7, height:7, borderRadius:"50%", background:"#f5b800",
+                    animation: privilege==="confidential"?"ercDotPulse 3s ease-in-out infinite":"none" }} />🌐 All Clients
                 </span>
-              )}
+              ) : (cred.clientIds||[]).length>0 ? (
+                <ClientBadges cred={cred} clientsById={clientsById} pulse={privilege==="confidential"} />
+              ) : null}
               {privilege==="restricted" && (
                 <span style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.3)",
                   borderRadius:20, padding:"2px 8px", fontSize:10, fontWeight:700 }}>🔒 Restricted</span>
@@ -1069,12 +1117,15 @@ function PortalFilter({ portals, creds, selected, onChange }) {
 function CredModal({ cred, onSave, onClose, session, clients }) {
   const [form, setForm] = useState(cred
     ? { verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null, ...cred }
-    : { portal:"", url:"", username:"", password:"", clientId:"", clientName:"",
+    : { portal:"", url:"", username:"", password:"", clientIds:[], clientNames:[],
         teams:[], passwordExpiryDays:90, needsRotation:false, rotationNote:"",
         authMethod:"None", authLocation:"",
         verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null });
   const [teamsAll, setTeamsAll] = useState(!!(cred && cred.teams==="all"));
   const [selTeams, setSelTeams] = useState(cred && Array.isArray(cred.teams) ? cred.teams : []);
+  const [clientsAll, setClientsAll] = useState(!!(cred && Array.isArray(cred.clientIds) && cred.clientIds.includes("all")));
+  const [selClients, setSelClients] = useState(cred && Array.isArray(cred.clientIds) && !cred.clientIds.includes("all") ? cred.clientIds : []);
+  const [triedSave, setTriedSave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showVerify, setShowVerify] = useState(!!(cred && (cred.verifyEmail || cred.verifyText || cred.verifyAuth)));
   const [showTime, setShowTime] = useState(!!(cred && cred.timeRestriction && cred.timeRestriction.enabled));
@@ -1102,14 +1153,22 @@ function CredModal({ cred, onSave, onClose, session, clients }) {
     return { ...p, timeRestriction:{ ...(p.timeRestriction||{}), windowDays: cur.includes(d)?cur.filter(x=>x!==d):[...cur,d] } };
   });
 
+  const noClient = !clientsAll && selClients.length===0;
+  const onClientPill = (id) => {
+    if (clientsAll) { setClientsAll(false); setSelClients([id]); }
+    else setSelClients(p => p.includes(id) ? p.filter(x=>x!==id) : [...p, id]);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.portal.trim()||!form.username.trim()||!form.password.trim()||!form.clientId) return;
+    setTriedSave(true);
+    if (!form.portal.trim()||!form.username.trim()||!form.password.trim()||noClient) return;
     setBusy(true);
     try {
       const timeRestriction = (form.timeRestriction && form.timeRestriction.enabled) ? form.timeRestriction : null;
-      const cl = activeClients.find(c=>c.id===form.clientId);
-      await onSave({ ...form, clientName: cl?cl.name:form.clientName, teams: teamsAll ? "all" : selTeams, timeRestriction });
+      const clientIds = clientsAll ? ["all"] : selClients;
+      const clientNames = clientsAll ? ["All Clients"] : selClients.map(id => { const c=activeClients.find(x=>x.id===id); return c?c.name:id; });
+      await onSave({ ...form, clientIds, clientNames, teams: teamsAll ? "all" : selTeams, timeRestriction });
     } finally { setBusy(false); }
   };
 
@@ -1137,8 +1196,21 @@ function CredModal({ cred, onSave, onClose, session, clients }) {
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Client</label>
-            <ClientSelect clients={activeClients} value={form.clientId} onChange={(id)=>set("clientId",id)} />
-            {!form.clientId && <p style={{ fontSize:12, color:"var(--text-muted)", margin:"6px 0 0" }}>Required — pick the client this credential belongs to.</p>}
+            <label style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, cursor:"pointer", fontSize:13, color:"var(--text-secondary)" }}>
+              <input type="checkbox" checked={clientsAll} onChange={e=>{ setClientsAll(e.target.checked); if(e.target.checked) setSelClients([]); }} /> 🌐 All Clients
+            </label>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              {activeClients.map(c=>{ const on = clientsAll || selClients.includes(c.id);
+                return (
+                  <button key={c.id} type="button" onClick={()=>onClientPill(c.id)}
+                    style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"5px 12px", borderRadius:20, fontSize:12, cursor:"pointer", fontWeight:600,
+                      border:"1px solid "+(on?c.color:"var(--border-default)"), background:on?hexA(c.color,0.15):"rgba(0,0,0,0.3)", color:on?c.color:"var(--text-secondary)", opacity:clientsAll?0.7:1 }}>
+                    <span style={{ width:8, height:8, borderRadius:"50%", background:c.color }} />{c.name} <span style={{ opacity:0.7, fontFamily:"var(--font-mono)", fontSize:11 }}>({c.code})</span>
+                  </button>
+                ); })}
+            </div>
+            {activeClients.length===0 && <p style={{ fontSize:12, color:"var(--text-muted)", margin:"6px 0 0" }}>No active clients — create one in the Clients tab.</p>}
+            {triedSave && noClient && <p style={{ fontSize:12, color:"var(--warning)", margin:"6px 0 0" }}>⚠️ Select at least one client</p>}
           </div>
 
           <div style={{ marginBottom:14 }}>
@@ -1384,9 +1456,13 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
     if (!r.Portal) errors.push("Missing Portal");
     if (!r.Username) errors.push("Missing Username");
     if (!r.Password) errors.push("Missing Password");
-    const clientVal = String(r.Client||r["Client Name"]||"").trim();
+    const clientVal = String(r.Client||r["Client Name"]||r.Clients||"").trim();
     if (!clientVal) errors.push("Missing Client");
-    else if (!activeClients.some(c=>c.name.toLowerCase()===clientVal.toLowerCase())) errors.push(`Unknown client: ${clientVal}. Create this client first.`);
+    else if (clientVal.toLowerCase()!=="all") {
+      for (const n of clientVal.split(",").map(s=>s.trim()).filter(Boolean)) {
+        if (!activeClients.some(c=>c.name.toLowerCase()===n.toLowerCase())) { errors.push(`Unknown client: ${n}. Create this client first.`); break; }
+      }
+    }
     // duplicate = portal + username match (case-insensitive)
     const existing = existingCreds.find(c =>
       c.portal.toLowerCase()===String(r.Portal||"").toLowerCase() &&
@@ -1415,7 +1491,7 @@ function ImportPreviewModal({ rows, existingCreds, clients, onConfirm, onClose }
     return [
       ["Password", ex.password, r.Password],
       ["URL", ex.url, r.URL],
-      ["Client", ex.clientName, (r.Client||r["Client Name"])],
+      ["Client", (ex.clientNames||[]).join(", "), (r.Client||r["Client Name"]||r.Clients)],
       ["Teams", (ex.teams==="all"?"all":(ex.teams||[]).join(",")), r.Teams],
     ].filter(([,o,n]) => n!==undefined && String(o||"")!==String(n||""));
   };
@@ -1703,7 +1779,8 @@ function ProfilePanel({ session, currentUser, onClose, onUserUpdate, toast, copy
 function MatrixView({ creds, toast, onReload }) {
   const ctx = useDepts();
   const teams = ctx ? ctx.deptIds : DEFAULT_DEPTS.map(d=>d.id);
-  const groups = [...new Set(creds.map(c=>c.clientName||"—"))];
+  const grpKey = (c) => (c.clientIds||[]).includes("all") ? "All Clients" : ((c.clientNames||[]).join(", ") || "—");
+  const groups = [...new Set(creds.map(grpKey))];
   const hasTeam = (cred, team) => cred.teams==="all"||(Array.isArray(cred.teams)&&cred.teams.includes(team));
 
   const toggleCell = async (cred, team) => {
@@ -1736,7 +1813,7 @@ function MatrixView({ creds, toast, onReload }) {
                 <tr>
                   <td colSpan={teams.length+1} style={{ background:"rgba(0,0,0,0.25)", padding:"6px 14px", fontWeight:700, color:"var(--text-muted)", fontSize:10, letterSpacing:1.5, textTransform:"uppercase" }}>{grp}</td>
                 </tr>
-                {creds.filter(c=>(c.clientName||"—")===grp).map((cred,i)=>(
+                {creds.filter(c=>grpKey(c)===grp).map((cred,i)=>(
                   <tr key={cred.id} className="erc-row" style={{ borderBottom:"1px solid var(--border-subtle)", background:i%2?"rgba(255,255,255,0.02)":"transparent" }}>
                     <td style={{ position:"sticky", left:0, background:"var(--bg-surface)", padding:"10px 14px", borderRight:"1px solid var(--border-subtle)", fontWeight:600, color:"var(--text-primary)" }}>{cred.portal}</td>
                     {teams.map(t=>(
@@ -1874,7 +1951,7 @@ function CredentialsTab({ session, toast }) {
 
   const clientsById = useMemo(() => Object.fromEntries(clients.map(c=>[c.id, c])), [clients]);
   const accessible = creds.filter(c=>canAccess(c,session.team));
-  const clientNames = ["All",...[...new Set(creds.map(c=>c.clientName||"").filter(Boolean))].sort()];
+  const clientNames = ["All",...[...new Set(creds.flatMap(c=>c.clientNames||[]).filter(n=>n&&n!=="All Clients"))].sort()];
   const portalNames = [...new Set(creds.map(c=>c.portal))].sort();
 
   const rotationWarning = (isAdmin?creds:accessible).filter(c=>{
@@ -1890,8 +1967,8 @@ function CredentialsTab({ session, toast }) {
   const filtered = baseList.filter(c=>{
     const q=search.toLowerCase();
     const ms=!search||c.portal.toLowerCase().includes(q)||c.username.toLowerCase().includes(q)||
-      (c.clientName||"").toLowerCase().includes(q)||(c.authLocation||"").toLowerCase().includes(q)||(c.url||"").toLowerCase().includes(q);
-    const mcl=clientFilter==="All"||(c.clientName||"")===clientFilter;
+      (c.clientNames||[]).join(" ").toLowerCase().includes(q)||(c.authLocation||"").toLowerCase().includes(q)||(c.url||"").toLowerCase().includes(q);
+    const mcl=clientFilter==="All"||(c.clientIds||[]).includes("all")||(c.clientNames||[]).includes(clientFilter);
     const mp=portalFilter.length===0||portalFilter.includes(c.portal);
     const mr=!restrictedOnly||(c.timeRestriction&&c.timeRestriction.enabled);
     return ms&&mcl&&mp&&mr;
@@ -1957,10 +2034,18 @@ function CredentialsTab({ session, toast }) {
     return null;
   };
   const buildImportRecord = (r) => {
-    const cl=clients.find(x=>x.active && x.name.toLowerCase()===String(r.Client||r["Client Name"]||"").toLowerCase());
+    const raw = String(r.Client||r["Client Name"]||r.Clients||"").trim();
+    let clientIds, clientNames;
+    if (raw.toLowerCase()==="all") { clientIds=["all"]; clientNames=["All Clients"]; }
+    else {
+      const names = raw.split(",").map(s=>s.trim()).filter(Boolean);
+      const matched = names.map(n=>clients.find(x=>x.active && x.name.toLowerCase()===n.toLowerCase()));
+      clientIds = matched.map(c=>c?c.id:null).filter(Boolean);
+      clientNames = matched.map((c,i)=>c?c.name:names[i]);
+    }
     return {
       portal:r.Portal, url:r.URL||"", username:r.Username||"", password:r.Password||"",
-      clientId: cl?cl.id:null, clientName: cl?cl.name:String(r.Client||r["Client Name"]||""),
+      clientIds, clientNames,
       verifyEmail:r["Verify Email"]||"", verifyText:r["Verify Text"]||"", verifyAuth:r["Verify Auth"]||"",
       teams:r.Teams==="all"?"all":String(r.Teams||"").split(",").map(t=>t.trim()).filter(Boolean),
       passwordExpiryDays:+(r["Expiry Days"])||90, needsRotation:false, rotationNote:"",
@@ -1998,10 +2083,15 @@ function CredentialsTab({ session, toast }) {
     };
     const trActive = (c)=>{ const st=evalTimeRestriction(c.timeRestriction).state;
       if(st==="none") return ""; return (st==="active"||st==="schedule"||st==="expiring")?"Yes":"No"; };
-    const h=["Portal","URL","Username","Password","Client Name","Client Code","Privilege Level","Verify Email","Verify Text","Verify Auth","Teams","Expiry Days","Days Since Updated","Needs Rotation","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
-    const rows=all.map(c=>{ const cl=clientsById[c.clientId];
+    const h=["Portal","URL","Username","Password","Clients","Client Codes","Privilege Level","Verify Email","Verify Text","Verify Auth","Teams","Expiry Days","Days Since Updated","Needs Rotation","Time Restriction Type","Window/Expiry Details","Active Now","Added By","Added At"];
+    const rows=all.map(c=>{
+      const isAll=(c.clientIds||[]).includes("all");
+      const cl = isAll ? Object.values(clientsById) : (c.clientIds||[]).map(id=>clientsById[id]).filter(Boolean);
+      const names = isAll ? "All Clients" : (c.clientNames||[]).join(", ");
+      const codes = isAll ? "ALL" : cl.map(x=>x.code).join(", ");
+      const priv = highestPrivilege(cl);
       return [c.portal,c.url,c.username,c.password,
-        c.clientName||(cl?cl.name:""), cl?cl.code:"", cl?cl.privilegeLevel:"",
+        names, codes, priv,
         c.verifyEmail||"",c.verifyText||"",c.verifyAuth||"",
         c.teams==="all"?"all":(c.teams||[]).join(","),c.passwordExpiryDays,daysSince(c.updatedAt),c.needsRotation?"Yes":"No",
         trType(c),trDetails(c),trActive(c),c.addedBy,c.addedAt]; });
@@ -2036,7 +2126,7 @@ function CredentialsTab({ session, toast }) {
 
   const stats = {
     accessible: accessible.length,
-    clientsCount: new Set(creds.map(c=>c.clientName||"").filter(Boolean)).size,
+    clientsCount: new Set(creds.flatMap(c=>c.clientNames||[]).filter(n=>n&&n!=="All Clients")).size,
     restricted: restrictedCount,
     team: accessible.filter(c=>c.teams!=="all"&&Array.isArray(c.teams)&&c.teams.includes(session.team)).length,
     total: creds.length,
@@ -2093,7 +2183,7 @@ function CredentialsTab({ session, toast }) {
           </div>
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
             {pinned.map((c,i)=>(
-              <CredentialCard key={c.id} index={i} cred={c} session={session} client={clientsById[c.clientId]} onEdit={setEditCred} onDelete={setDeleteCredState}
+              <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
                 onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={true} requests={requests}
                 onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
             ))}
@@ -2141,7 +2231,7 @@ function CredentialsTab({ session, toast }) {
       ) : (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
           {unpinned.map((c,i)=>(
-            <CredentialCard key={c.id} index={i} cred={c} session={session} client={clientsById[c.clientId]} onEdit={setEditCred} onDelete={setDeleteCredState}
+            <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
               onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={false} requests={requests}
               onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch} />
           ))}
@@ -2280,7 +2370,7 @@ function ClientsTab({ session, toast }) {
   }, [toast]);
   useEffect(() => { load(); }, [load]);
 
-  const credCount = (id) => creds.filter(c=>c.clientId===id).length;
+  const credCount = (id) => creds.filter(c=>(c.clientIds||[]).includes(id)||(c.clientIds||[]).includes("all")).length;
   const filtered = clients.filter(c =>
     (!search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.code||"").toLowerCase().includes(search.toLowerCase())) &&
     (privFilter==="All" || c.privilegeLevel===privFilter));
