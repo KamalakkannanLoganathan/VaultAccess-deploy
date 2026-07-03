@@ -73,6 +73,15 @@ const styleForColor = (color) => ({ bg:hexA(color,0.12), color, border:hexA(colo
 const slugify = (s) => String(s||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
 const DeptContext = React.createContext(null);
 const useDepts = () => useContext(DeptContext);
+
+// ── User preferences: theme (dark/light/grey) + layout density (compact/comfortable/list) ──
+const THEMES = ["dark", "light", "grey"];
+const DENSITIES = ["compact", "comfortable", "list"];
+const readPref = (key, allowed, fallback) => {
+  try { const v = localStorage.getItem(key); return allowed.includes(v) ? v : fallback; } catch { return fallback; }
+};
+const PrefsContext = React.createContext({ theme:"dark", density:"compact", setTheme:()=>{}, setDensity:()=>{} });
+const usePrefs = () => useContext(PrefsContext);
 const CAT_TINT = {
   Development:"rgba(96,165,250,0.15)", Infrastructure:"rgba(52,211,153,0.15)", Design:"rgba(167,139,250,0.15)",
   Marketing:"rgba(244,114,182,0.15)", Communication:"rgba(245,184,0,0.15)", Default:"rgba(255,255,255,0.08)",
@@ -196,17 +205,17 @@ function useCountUp(target, duration = 600) {
 
 // ─── Design tokens / shared style fragments ──────────────────────────────────
 const glass = {
-  background:"linear-gradient(135deg, rgba(13,24,41,0.9) 0%, rgba(19,32,53,0.85) 100%)",
+  background:"linear-gradient(135deg, var(--surface-grad-1) 0%, var(--surface-grad-2) 100%)",
   backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
-  border:"1px solid rgba(255,255,255,0.08)", borderRadius:16,
-  boxShadow:"0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)",
+  border:"1px solid var(--surface-border)", borderRadius:16,
+  boxShadow:"var(--surface-shadow)",
 };
-const fieldBox = { background:"rgba(0,0,0,0.25)", border:"1px solid var(--border-subtle)", borderRadius:8, padding:"8px 12px" };
+const fieldBox = { background:"var(--field-bg)", border:"1px solid var(--border-subtle)", borderRadius:8, padding:"8px 12px" };
 const microLabel = { fontSize:10, fontWeight:600, letterSpacing:1.5, textTransform:"uppercase", color:"var(--text-muted)" };
 const monoVal = (muted) => ({ fontFamily:"var(--font-mono)", fontSize:13, color: muted?"var(--text-muted)":"var(--text-primary)", wordBreak:"break-all", flex:1 });
 const iconBtn = (active, disabled) => ({
   width:32, height:32, display:"inline-flex", alignItems:"center", justifyContent:"center", flexShrink:0,
-  background: active?"var(--success-bg)":"rgba(255,255,255,0.05)",
+  background: active?"var(--success-bg)":"var(--hover-bg)",
   border:"1px solid "+(active?"rgba(16,185,129,0.4)":"var(--border-subtle)"),
   borderRadius:8, cursor: disabled?"not-allowed":"pointer", color: active?"var(--success)":"var(--text-secondary)",
   fontSize:13, transition:"all 0.15s ease", opacity: disabled?0.4:1,
@@ -218,22 +227,22 @@ const S = {
       fontWeight:600, fontSize:14, transition:"all 0.15s ease", display:"inline-flex",
       alignItems:"center", gap:6, fontFamily:"var(--font-ui)" };
     const variants = {
-      primary:   { background:"linear-gradient(135deg,#f5b800 0%,#d4960a 100%)", color:"#03070f", fontWeight:700, boxShadow:"0 4px 16px rgba(245,184,0,0.3)" },
-      danger:    { background:"rgba(239,68,68,0.12)", color:"#f87171", border:"1px solid rgba(239,68,68,0.3)" },
-      ghost:     { background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid rgba(255,255,255,0.12)" },
-      secondary: { background:"rgba(255,255,255,0.05)", color:"var(--text-secondary)", border:"1px solid rgba(255,255,255,0.12)" },
+      primary:   { background:"linear-gradient(135deg,var(--gold-bright) 0%,var(--gold-mid) 100%)", color:"var(--btn-ink)", fontWeight:700, boxShadow:"0 4px 16px var(--gold-glow)" },
+      danger:    { background:"var(--danger-bg)", color:"var(--danger)", border:"1px solid rgba(239,68,68,0.3)" },
+      ghost:     { background:"var(--hover-bg)", color:"var(--text-secondary)", border:"1px solid var(--chip-border)" },
+      secondary: { background:"var(--hover-bg)", color:"var(--text-secondary)", border:"1px solid var(--chip-border)" },
     };
     return { ...base, ...(variants[variant || "secondary"] || variants.secondary), ...(extra||{}) };
   },
-  card: (extra) => ({ ...glass, padding:20, transition:"all 0.2s cubic-bezier(0.4,0,0.2,1)", ...(extra||{}) }),
+  card: (extra) => ({ ...glass, padding:"var(--card-pad)", transition:"all 0.2s cubic-bezier(0.4,0,0.2,1)", ...(extra||{}) }),
   input: (extra) => ({ width:"100%", padding:"10px 14px", borderRadius:10,
-    border:"1px solid var(--border-default)", fontSize:14, color:"var(--text-primary)", background:"rgba(0,0,0,0.3)",
+    border:"1px solid var(--border-default)", fontSize:14, color:"var(--text-primary)", background:"var(--input-bg)",
     outline:"none", fontFamily:"var(--font-ui)", boxSizing:"border-box", ...(extra||{}) }),
   label: { fontSize:11, fontWeight:600, color:"var(--text-muted)", marginBottom:6, display:"block", textTransform:"uppercase", letterSpacing:1 },
-  overlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)",
+  overlay: { position:"fixed", inset:0, background:"var(--overlay-bg)", backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)",
     zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 },
   modal: (extra) => ({ background:"var(--bg-elevated)", border:"1px solid var(--border-default)", borderTop:"2px solid var(--gold-bright)",
-    borderRadius:20, boxShadow:"0 24px 80px rgba(0,0,0,0.6)", animation:"ercModalIn 0.2s cubic-bezier(0.34,1.56,0.64,1)", ...(extra||{}) }),
+    borderRadius:20, boxShadow:"var(--modal-shadow)", animation:"ercModalIn 0.2s cubic-bezier(0.34,1.56,0.64,1)", ...(extra||{}) }),
 };
 
 // ─── Global styles (CSS variables, keyframes, polish) ────────────────────────
@@ -251,7 +260,45 @@ function GlobalStyles() {
         --inuse:#f97316; --inuse-bg:rgba(249,115,22,0.10); --notworking:#ef4444; --notworking-bg:rgba(239,68,68,0.10);
         --font-ui:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; --font-mono:'JetBrains Mono',monospace;
         --ring:0 0 0 3px var(--gold-dim); --shadow-card:0 1px 2px rgba(0,0,0,0.6),0 8px 32px rgba(0,0,0,0.45);
+        /* Surface tokens — dark values equal the previous hardcodes (zero visual change) */
+        --surface-grad-1:rgba(13,24,41,0.9); --surface-grad-2:rgba(19,32,53,0.85);
+        --surface-border:rgba(255,255,255,0.08); --surface-shadow:0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06);
+        --input-bg:rgba(0,0,0,0.3); --field-bg:rgba(0,0,0,0.25); --track-bg:rgba(0,0,0,0.3);
+        --overlay-bg:rgba(0,0,0,0.7); --modal-shadow:0 24px 80px rgba(0,0,0,0.6);
+        --hover-bg:rgba(255,255,255,0.05); --hover-bg-strong:rgba(255,255,255,0.10); --chip-border:rgba(255,255,255,0.12);
+        --header-bg:rgba(7,10,16,0.92); --page-dot:rgba(255,255,255,0.022); --btn-ink:#03070f; --tab-shadow:0 2px 8px rgba(0,0,0,0.4);
+        /* Density tokens — Compact = current defaults */
+        --card-pad:20px; --card-gap:12px; --grid-gap:16px; --font-scale:1;
       }
+      /* ── Grey theme — neutral slate ── */
+      html[data-theme="grey"] {
+        --bg-void:#1b2027; --bg-base:#22272e; --bg-surface:#2a2f37; --bg-elevated:#2f353d; --bg-highlight:#373d47;
+        --border-subtle:rgba(255,255,255,0.07); --border-default:rgba(255,255,255,0.12); --border-strong:rgba(255,255,255,0.2);
+        --text-primary:#eaeef4; --text-secondary:#b3bcc9; --text-muted:#828c99; --text-gold:#f0b542;
+        --gold-bright:#f0b542; --surface-grad-1:#2a2f37; --surface-grad-2:#282d34;
+        --surface-border:rgba(255,255,255,0.09); --surface-shadow:0 4px 20px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05);
+        --input-bg:rgba(0,0,0,0.22); --field-bg:rgba(0,0,0,0.2); --track-bg:rgba(0,0,0,0.25);
+        --overlay-bg:rgba(0,0,0,0.6); --modal-shadow:0 24px 60px rgba(0,0,0,0.5);
+        --hover-bg:rgba(255,255,255,0.06); --hover-bg-strong:rgba(255,255,255,0.11); --chip-border:rgba(255,255,255,0.14);
+        --header-bg:rgba(27,32,39,0.92); --page-dot:rgba(255,255,255,0.03); --btn-ink:#1c1205; --tab-shadow:0 2px 8px rgba(0,0,0,0.4);
+      }
+      /* ── Light theme — neutral paper, same amber accent ── */
+      html[data-theme="light"] {
+        --bg-void:#eef1f6; --bg-base:#f4f6fa; --bg-surface:#ffffff; --bg-elevated:#ffffff; --bg-highlight:#eef2f8;
+        --border-subtle:rgba(15,23,42,0.08); --border-default:rgba(15,23,42,0.13); --border-strong:rgba(15,23,42,0.22);
+        --gold-bright:#b7791f; --gold-mid:#a9760a; --gold-deep:#8a6111; --gold-dim:rgba(183,121,31,0.15); --gold-glow:rgba(183,121,31,0.2);
+        --text-primary:#0f172a; --text-secondary:#475569; --text-muted:#7c889b; --text-gold:#b7791f;
+        --success-bg:rgba(16,185,129,0.14); --warning-bg:rgba(217,119,6,0.16); --danger-bg:rgba(220,38,38,0.12); --info-bg:rgba(37,99,235,0.12);
+        --surface-grad-1:#ffffff; --surface-grad-2:#ffffff;
+        --surface-border:rgba(15,23,42,0.10); --surface-shadow:0 1px 2px rgba(15,23,42,0.06), 0 8px 24px rgba(15,23,42,0.08);
+        --input-bg:rgba(15,23,42,0.03); --field-bg:rgba(15,23,42,0.035); --track-bg:rgba(15,23,42,0.05);
+        --overlay-bg:rgba(15,23,42,0.35); --modal-shadow:0 24px 70px rgba(15,23,42,0.18);
+        --hover-bg:rgba(15,23,42,0.04); --hover-bg-strong:rgba(15,23,42,0.08); --chip-border:rgba(15,23,42,0.15);
+        --header-bg:rgba(255,255,255,0.9); --page-dot:rgba(15,23,42,0.05); --btn-ink:#2a1c05; --tab-shadow:0 2px 8px rgba(15,23,42,0.12);
+      }
+      html[data-theme="light"] body { background-image:none; }
+      /* ── Density: Comfortable ── */
+      html[data-density="comfortable"] { --card-pad:26px; --card-gap:16px; --grid-gap:22px; --font-scale:1.06; }
       * { box-sizing:border-box; }
       body { font-family:var(--font-ui); color:var(--text-primary); background:var(--bg-void);
         background-image:
@@ -270,13 +317,14 @@ function GlobalStyles() {
       input::placeholder, textarea::placeholder { color:var(--text-muted); }
       input, select, textarea { transition:border-color .15s ease, box-shadow .15s ease; }
       input:focus, select:focus, textarea:focus { border-color:var(--gold-bright) !important; box-shadow:0 0 0 3px var(--gold-dim); }
-      select option { background:#132035; color:#f0f4ff; }
+      select option { background:var(--bg-elevated); color:var(--text-primary); }
       .erc-card { transition:all 0.2s cubic-bezier(0.4,0,0.2,1); }
-      .erc-card:hover { border-color:rgba(245,184,0,0.25); transform:translateY(-2px);
-        box-shadow:0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(245,184,0,0.15), inset 0 1px 0 rgba(255,255,255,0.08); }
-      .erc-prim:hover { filter:brightness(1.1); box-shadow:0 6px 24px rgba(245,184,0,0.45); }
+      .erc-card:hover { border-color:var(--gold-glow); transform:translateY(-2px);
+        box-shadow:0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px var(--gold-dim), inset 0 1px 0 rgba(255,255,255,0.08); }
+      html[data-theme="light"] .erc-card:hover { box-shadow:0 10px 30px rgba(15,23,42,0.14), 0 0 0 1px var(--gold-dim); }
+      .erc-prim:hover { filter:brightness(1.08); box-shadow:0 6px 24px var(--gold-glow); }
       .erc-prim:active { transform:scale(0.98); }
-      .erc-ghost:hover { background:rgba(255,255,255,0.10) !important; color:var(--text-primary) !important; }
+      .erc-ghost:hover { background:var(--hover-bg-strong) !important; color:var(--text-primary) !important; }
       .erc-pill:hover { border-color:var(--border-strong); color:var(--text-primary); }
       @keyframes ercFloat { 0%{transform:translate(0,0)} 50%{transform:translate(20px,-16px)} 100%{transform:translate(0,0)} }
       @keyframes ercShake { 0%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} 100%{transform:translateX(0)} }
@@ -470,7 +518,7 @@ function LoginScreen({ onLogin }) {
   };
 
   const fieldErr = !!error;
-  const dInput = { ...S.input(), background:"rgba(0,0,0,0.35)", borderColor: fieldErr ? "rgba(239,68,68,0.5)" : "var(--border-default)" };
+  const dInput = { ...S.input(), background:"var(--input-bg)", borderColor: fieldErr ? "rgba(239,68,68,0.5)" : "var(--border-default)" };
 
   return (
     <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center",
@@ -578,7 +626,7 @@ function RegistrationScreen({ token, onBackToLogin }) {
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   };
 
-  const dInput = { ...S.input(), background:"rgba(0,0,0,0.35)" };
+  const dInput = { ...S.input(), background:"var(--input-bg)" };
   const wrap = (children) => (
     <div style={{ minHeight:"100vh", background:"var(--bg-void)", display:"flex", alignItems:"center", justifyContent:"center", padding:20, position:"relative" }}>
       <Aurora /><div style={{ position:"relative", zIndex:1, width:"100%", maxWidth:440, display:"flex", flexDirection:"column", alignItems:"center" }}>{children}</div>
@@ -849,7 +897,7 @@ function ClientBadges({ cred, clientsById, pulse }) {
 }
 
 // ─── Status popover (Mark In Use / Report Issue / Resolve) ───────────────────
-function StatusPopover({ kind, note, setNote, onConfirm, onClose }) {
+function StatusPopover({ kind, note, setNote, onConfirm, onClose, anchorStyle }) {
   const [busy, setBusy] = useState(false);
   const cfg = {
     inuse:   { title:"Add a note (optional)",   ph:"e.g. Running payroll batch", max:80,  btn:"Confirm",          variant:"primary", required:false },
@@ -859,7 +907,7 @@ function StatusPopover({ kind, note, setNote, onConfirm, onClose }) {
   const go = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
   return (
     <div style={{ position:"absolute", top:"calc(100% + 8px)", left:0, zIndex:60, width:260, background:"var(--bg-elevated)",
-      border:"1px solid var(--border-default)", borderRadius:12, padding:14, boxShadow:"0 8px 32px rgba(0,0,0,0.5)", animation:"ercSlideDown 0.2s ease" }}>
+      border:"1px solid var(--border-default)", borderRadius:12, padding:14, boxShadow:"var(--modal-shadow)", animation:"ercSlideDown 0.2s ease", ...(anchorStyle||{}) }}>
       <label style={S.label}>{cfg.title}{cfg.required?" *":""}</label>
       <textarea value={note} onChange={e=>setNote(e.target.value.slice(0,cfg.max))} placeholder={cfg.ph} autoFocus
         style={{ ...S.input(), minHeight:60, resize:"vertical", fontSize:13 }} />
@@ -899,7 +947,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
   const tr = evalTimeRestriction(cred.timeRestriction);
   const lockedByTime = tr.state === "expired";
   const cardExtra =
-    tr.state === "expired" ? { borderLeft:"4px solid var(--danger)", background:"linear-gradient(135deg, rgba(239,68,68,0.06), rgba(19,32,53,0.85))" } :
+    tr.state === "expired" ? { borderLeft:"4px solid var(--danger)", background:"linear-gradient(135deg, rgba(239,68,68,0.06), var(--surface-grad-2))" } :
     (tr.state === "outside" || tr.state === "wrongday" || tr.state === "expiring") ? { borderLeft:"4px solid var(--warning)" } :
     isFav ? { borderTop:"2px solid rgba(245,184,0,0.4)" } : {};
 
@@ -953,8 +1001,8 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
   );
 
   return (
-    <div className="erc-card" style={{ ...S.card(), ...finalExtra, display:"flex", flexDirection:"column", gap:12,
-      position:"relative", zIndex: popover ? 50 : undefined,
+    <div className="erc-card" style={{ ...S.card(), ...finalExtra, display:"flex", flexDirection:"column", gap:"var(--card-gap)",
+      height:"100%", position:"relative", zIndex: popover ? 50 : undefined,
       animation:`ercCardIn 0.3s ease-out both`, animationDelay:`${(index||0)*40}ms` }}>
       {leftBorderEl}
       {/* Header */}
@@ -1086,6 +1134,10 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
         )}
       </>)}
 
+      {/* Flexible spacer — absorbs slack so the footer cluster always pins to the bottom
+          and action buttons line up across every card in a row, regardless of field count. */}
+      <div style={{ flex:"1 1 auto" }} />
+
       {/* Footer */}
       <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
         {cred.teams==="all"
@@ -1153,6 +1205,105 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
             : <button onClick={()=>onRequestAccess(cred)} className="erc-ghost" style={{ ...S.btn("ghost"), fontSize:12, color:"var(--info)", borderColor:"rgba(96,165,250,0.3)" }}>🔑 Request Access</button>}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Credential row (List density) — one credential per row, aligned columns ──
+const LIST_COLS = "minmax(170px,1.5fr) minmax(120px,1fr) minmax(130px,1.1fr) minmax(90px,auto) auto";
+function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, onFavToggle, isFav,
+  requests, onRequestAccess, toast, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue }) {
+  const [showPw, setShowPw] = useState(false);
+  const [copied, setCopied] = useState(null);
+  const [popover, setPopover] = useState(null);
+  const [note, setNote] = useState("");
+  const hasAccess = canAccess(cred, session.team);
+  const isAdmin = session.team === "admin";
+  const myClients = resolveClients(cred, clientsById);
+  const privilege = highestPrivilege(myClients);
+  const confidentialBlock = privilege === "confidential" && !isAdmin;
+  const restrictedPw = privilege === "restricted" && !isAdmin;
+  const isAllClients = (cred.clientIds||[]).includes("all");
+  const inUse = !!cred.inUse, notWorking = !!cred.notWorking;
+  const inUseStale = inUse && hoursSince(cred.inUseSince) >= 8;
+  const iTagged = inUse && cred.inUseByUserId === session.userId;
+  const iReported = notWorking && cred.notWorkingReportedById === session.userId;
+  const tr = evalTimeRestriction(cred.timeRestriction);
+  const lockedByTime = tr.state === "expired";
+  const age = daysSince(cred.updatedAt);
+  const pendingReq = requests.find(r => r.credentialId===cred.id && r.requesterId===session.userId && r.status==="pending");
+  const flash = (k)=>{ setCopied(k); setTimeout(()=>setCopied(c=>c===k?null:c),1500); };
+  const copy = (val,label,key)=>{ if(!hasAccess||lockedByTime) return; navigator.clipboard.writeText(val).then(()=>{ onCopy&&onCopy(cred,label); flash(key); toast&&toast(label+" copied!","success"); }); };
+  const leftAccent = notWorking ? "#ef4444" : inUseStale ? "#f59e0b" : inUse ? "#f97316" : lockedByTime ? "var(--danger)" : "transparent";
+  const ghost = { ...S.btn("ghost"), padding:"5px 9px", fontSize:12 };
+  return (
+    <div className="erc-card" style={{ ...glass, borderRadius:12, padding:"0", position:"relative", zIndex: popover?50:undefined,
+      display:"grid", gridTemplateColumns:LIST_COLS, alignItems:"center", gap:12, minHeight:56,
+      paddingLeft:14, paddingRight:14, borderLeft:"3px solid "+leftAccent,
+      background: (inUse||notWorking) ? "linear-gradient(135deg, "+(notWorking?"rgba(239,68,68,0.06)":"rgba(249,115,22,0.05)")+" 0%, var(--surface-grad-2) 60%)" : undefined }}>
+      {/* Col 1 — portal + client + status dots + fav */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, padding:"10px 0" }}>
+        <button onClick={()=>onFavToggle(cred.id)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:16, color:isFav?"var(--gold-bright)":"var(--text-muted)", padding:0, flexShrink:0 }}>★</button>
+        <span style={{ minWidth:0 }}>
+          <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <span style={{ fontWeight:700, fontSize:14, color:"var(--text-primary)", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{cred.portal}</span>
+            {inUse && <span title="In use" style={{ width:8, height:8, borderRadius:"50%", background:"#f97316", flexShrink:0 }} />}
+            {notWorking && <span title="Not working" style={{ width:8, height:8, borderRadius:"50%", background:"#ef4444", flexShrink:0 }} />}
+          </span>
+          <span style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", display:"block" }}>
+            {isAllClients ? "🌐 All Clients" : (cred.clientNames||[]).join(", ") || "—"}
+          </span>
+        </span>
+      </div>
+      {/* Col 2 — username */}
+      <div style={{ display:"flex", alignItems:"center", gap:6, minWidth:0 }}>
+        {hasAccess ? (<>
+          <code style={{ fontFamily:"var(--font-mono)", fontSize:12, color:"var(--text-secondary)", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{cred.username}</code>
+          <button onClick={()=>copy(cred.username,"Username","u")} disabled={lockedByTime} style={{ ...iconBtn(copied==="u",lockedByTime), width:26, height:26, fontSize:11 }}>{copied==="u"?"✓":"📋"}</button>
+        </>) : <span style={{ fontSize:12, color:"var(--text-muted)" }}>No access</span>}
+      </div>
+      {/* Col 3 — password */}
+      <div style={{ display:"flex", alignItems:"center", gap:6, minWidth:0 }}>
+        {confidentialBlock ? <span style={{ fontSize:12, color:"var(--text-muted)" }}>🔒 Confidential</span>
+          : restrictedPw ? <span style={{ fontSize:12, color:"var(--warning)" }}>••••• admin only</span>
+          : hasAccess ? (<>
+            <code style={{ fontFamily:"var(--font-mono)", fontSize:12, color:"var(--text-secondary)", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{showPw?cred.password:"•".repeat(Math.min((cred.password||"").length,12))}</code>
+            <button onClick={()=>setShowPw(p=>!p)} disabled={lockedByTime} style={{ ...iconBtn(false,lockedByTime), width:26, height:26, fontSize:11 }}>{showPw?"🙈":"👁"}</button>
+            <button onClick={()=>copy(cred.password,"Password","p")} disabled={lockedByTime} style={{ ...iconBtn(copied==="p",lockedByTime), width:26, height:26, fontSize:11 }}>{copied==="p"?"✓":"📋"}</button>
+          </>) : <span style={{ fontSize:12, color:"var(--text-muted)" }}>—</span>}
+      </div>
+      {/* Col 4 — status */}
+      <div style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap" }}>
+        {notWorking ? <span style={{ color:"#f87171", fontWeight:600 }}>❌ Not working</span>
+          : inUse ? <span style={{ color:inUseStale?"#fcd34d":"#fdba74", fontWeight:600 }}>🟠 {cred.inUseBy}</span>
+          : tr.state==="active" ? <span style={{ color:"var(--success)", fontWeight:600 }}>🟢 Active</span>
+          : lockedByTime ? <span style={{ color:"var(--danger)", fontWeight:600 }}>🔴 Restricted</span>
+          : <span>{age}d old</span>}
+      </div>
+      {/* Col 5 — actions */}
+      <div style={{ position:"relative", display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", flexWrap:"wrap", padding:"8px 0" }}>
+        {hasAccess && (!inUse
+          ? <button onClick={()=>{ setNote(""); setPopover(p=>p==="inuse"?null:"inuse"); }} className="erc-ghost" style={ghost} title="Mark In Use">🟠</button>
+          : (iTagged||isAdmin)
+            ? <button onClick={()=>onReleaseInUse(cred)} style={{ ...ghost, color:"#fb923c", borderColor:"rgba(249,115,22,0.4)" }} title="Release">Release</button>
+            : null)}
+        {hasAccess && (!notWorking
+          ? <button onClick={()=>{ setNote(""); setPopover(p=>p==="report"?null:"report"); }} className="erc-ghost" style={ghost} title="Report Issue">⚠️</button>
+          : isAdmin
+            ? <button onClick={()=>{ setNote(""); setPopover(p=>p==="resolve"?null:"resolve"); }} className="erc-prim" style={{ ...S.btn("primary"), padding:"5px 9px", fontSize:12 }} title="Mark Resolved">✓</button>
+            : iReported
+              ? <button onClick={()=>{ setNote(cred.notWorkingNote||""); setPopover(p=>p==="report"?null:"report"); }} style={ghost} title="Update note">Note</button>
+              : null)}
+        {isAdmin && <button onClick={()=>onEdit(cred)} className="erc-ghost" style={ghost} title="Edit">✏️</button>}
+        {isAdmin && <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"5px 9px", fontSize:12 }} title="Delete">🗑️</button>}
+        {!hasAccess && !isAdmin && (pendingReq
+          ? <span style={{ fontSize:11, color:"#fcd34d" }}>Pending</span>
+          : <button onClick={()=>onRequestAccess(cred)} className="erc-ghost" style={{ ...ghost, color:"var(--info)", borderColor:"rgba(96,165,250,0.3)" }}>🔑 Request</button>)}
+        {popover && (
+          <StatusPopover kind={popover} note={note} setNote={setNote} onClose={()=>setPopover(null)} anchorStyle={{ left:"auto", right:0 }}
+            onConfirm={async ()=>{ if(popover==="inuse") await onMarkInUse(cred,note); else if(popover==="report") await onReportIssue(cred,note); else if(popover==="resolve") await onResolveIssue(cred,note); setPopover(null); }} />
+        )}
+      </div>
     </div>
   );
 }
@@ -2144,11 +2295,13 @@ function StatCard({ icon, val, label, descriptor, accent }) {
 }
 
 // ─── Glass toolbar wrapper ───────────────────────────────────────────────────
-const toolbar = { background:"rgba(8,15,30,0.8)", border:"1px solid var(--border-subtle)", borderRadius:14, padding:"12px 16px",
+const toolbar = { background:"var(--track-bg)", border:"1px solid var(--border-subtle)", borderRadius:14, padding:"12px 16px",
   display:"flex", gap:10, flexWrap:"wrap", alignItems:"center", marginBottom:16 };
 
 // ─── Credentials Tab ──────────────────────────────────────────────────────────
 function CredentialsTab({ session, toast }) {
+  const { density } = usePrefs();
+  const listMode = density === "list";
   const [creds, setCreds] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2559,6 +2712,20 @@ function CredentialsTab({ session, toast }) {
 
   if (loading) return <SkeletonGrid />;
 
+  // Grid (cards) vs List (rows) — same data, two rendering modes. Grid stretches
+  // items so every card in a row shares the tallest card's height.
+  const collWrap = listMode
+    ? { display:"flex", flexDirection:"column", gap:8 }
+    : { display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:"var(--grid-gap)", alignItems:"stretch" };
+  const renderCred = (c, i, fav) => listMode
+    ? <CredentialRow key={c.id} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
+        onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={fav} requests={requests} onRequestAccess={setRequestCred} toast={toast}
+        onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
+    : <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
+        onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={fav} requests={requests}
+        onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
+        onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />;
+
   return (
     <div className="erc-page">
       {notWorkingList.length>0 && (
@@ -2611,13 +2778,8 @@ function CredentialsTab({ session, toast }) {
           <div style={{ fontSize:13, fontWeight:700, color:"var(--gold-bright)", marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
             ⭐ Pinned <span style={{ background:"var(--gold-dim)", color:"var(--gold-bright)", borderRadius:20, padding:"1px 8px", fontSize:11 }}>{pinned.length}</span>
           </div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
-            {pinned.map((c,i)=>(
-              <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
-                onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={true} requests={requests}
-                onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
-              onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
-            ))}
+          <div style={collWrap}>
+            {pinned.map((c,i)=>renderCred(c,i,true))}
           </div>
         </div>
       )}
@@ -2662,13 +2824,8 @@ function CredentialsTab({ session, toast }) {
           : <EmptyState icon="🔑" title="No credentials yet" sub="Add your first credential to get started"
               action={isAdmin && <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>} />
       ) : (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:16 }}>
-          {unpinned.map((c,i)=>(
-            <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
-              onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={false} requests={requests}
-              onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
-              onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
-          ))}
+        <div style={collWrap}>
+          {unpinned.map((c,i)=>renderCred(c,i,false))}
         </div>
       )}
 
@@ -3385,6 +3542,40 @@ function AccessRequestsTab({ session, toast, onChange }) {
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
+// ── Tweaks menu: theme + layout density (segmented controls) ──
+function TweaksMenu() {
+  const { theme, density, setTheme, setDensity } = usePrefs();
+  const [open, setOpen] = useState(false);
+  const themeOpts = [["dark","🌙 Dark"],["light","☀️ Light"],["grey","🌫️ Grey"]];
+  const densOpts = [["compact","Compact"],["comfortable","Comfortable"],["list","List"]];
+  const Seg = ({ opts, value, onPick }) => (
+    <div role="group" style={{ display:"flex", gap:4, background:"var(--track-bg)", border:"1px solid var(--border-subtle)", borderRadius:10, padding:4 }}>
+      {opts.map(([val,label])=>{ const on=value===val; return (
+        <button key={val} onClick={()=>onPick(val)} aria-pressed={on}
+          style={{ flex:1, whiteSpace:"nowrap", padding:"6px 10px", borderRadius:7, border:"none", cursor:"pointer", fontSize:12, fontWeight:on?700:500,
+            transition:"all .15s ease", background:on?"var(--bg-elevated)":"transparent", color:on?"var(--text-primary)":"var(--text-muted)",
+            boxShadow:on?"var(--tab-shadow)":"none" }}>{label}</button>
+      ); })}
+    </div>
+  );
+  return (
+    <div style={{ position:"relative" }}>
+      <button onClick={()=>setOpen(o=>!o)} title="Tweaks" aria-label="Tweaks" aria-expanded={open}
+        style={{ background:"none", border:"none", cursor:"pointer", fontSize:18, padding:0, lineHeight:1, color:"var(--text-secondary)" }}>⚙️</button>
+      {open && (<>
+        <div onClick={()=>setOpen(false)} style={{ position:"fixed", inset:0, zIndex:140 }} />
+        <div style={{ ...dropdownPanel, right:0, left:"auto", top:"calc(100% + 10px)", minWidth:280, zIndex:150, padding:16 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"var(--text-primary)", marginBottom:12 }}>Tweaks</div>
+          <div style={{ ...S.label, marginBottom:6 }}>Theme</div>
+          <Seg opts={themeOpts} value={theme} onPick={setTheme} />
+          <div style={{ ...S.label, margin:"14px 0 6px" }}>Layout density</div>
+          <Seg opts={densOpts} value={density} onPick={setDensity} />
+        </div>
+      </>)}
+    </div>
+  );
+}
+
 function Dashboard({ user, onLogout }) {
   const session = getSession();
   const [tab, setTab] = useState("credentials");
@@ -3396,6 +3587,18 @@ function Dashboard({ user, onLogout }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [pendingRegCount, setPendingRegCount] = useState(0);
   const [showBell, setShowBell] = useState(false);
+  const [theme, setThemeState] = useState(() => readPref("erc-theme", THEMES, "dark"));
+  const [density, setDensityState] = useState(() => readPref("erc-density", DENSITIES, "compact"));
+  const setTheme = useCallback((t) => { setThemeState(t); try { localStorage.setItem("erc-theme", t); } catch {} }, []);
+  const setDensity = useCallback((d) => { setDensityState(d); try { localStorage.setItem("erc-density", d); } catch {} }, []);
+  useEffect(() => {
+    const r = document.documentElement;
+    r.setAttribute("data-theme", theme);
+    r.setAttribute("data-density", density);
+    const bg = theme==="light" ? "#f4f6fa" : theme==="grey" ? "#22272e" : "#070a10";
+    r.style.background = bg; if (document.body) document.body.style.background = bg;
+  }, [theme, density]);
+  const prefs = useMemo(() => ({ theme, density, setTheme, setDensity }), [theme, density, setTheme, setDensity]);
   const [toasts, toast] = useToast();
   const lastActivity = useRef(Date.now());
   const warningShown = useRef(false);
@@ -3459,17 +3662,18 @@ function Dashboard({ user, onLogout }) {
 
   const gridBg = {
     minHeight:"100vh", background:"transparent",
-    backgroundImage:"radial-gradient(circle at 1px 1px, rgba(255,255,255,0.022) 1px, transparent 0)",
+    backgroundImage:"radial-gradient(circle at 1px 1px, var(--page-dot) 1px, transparent 0)",
     backgroundSize:"32px 32px",
   };
 
   return (
+    <PrefsContext.Provider value={prefs}>
     <DeptContext.Provider value={deptCtx}>
     <div style={gridBg}>
       <GlobalStyles />
       <ToastContainer toasts={toasts} />
 
-      <header style={{ background:"rgba(7,10,16,0.92)", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
+      <header style={{ background:"var(--header-bg)", backdropFilter:"blur(20px)", WebkitBackdropFilter:"blur(20px)",
         padding:"0 24px", height:64, display:"flex", alignItems:"center", justifyContent:"space-between",
         position:"sticky", top:0, zIndex:100, borderBottom:"1px solid var(--border-subtle)" }}>
         <div style={{ display:"flex", alignItems:"center", gap:9 }}>
@@ -3479,13 +3683,13 @@ function Dashboard({ user, onLogout }) {
         </div>
 
         {TABS.length>1 && (
-          <div style={{ position:"relative", display:"flex", gap:4, background:"rgba(0,0,0,0.3)", border:"1px solid var(--border-subtle)", borderRadius:12, padding:4 }}>
+          <div style={{ position:"relative", display:"flex", gap:4, background:"var(--track-bg)", border:"1px solid var(--border-subtle)", borderRadius:12, padding:4 }}>
             {TABS.map(t=>{ const on=tab===t;
               return (
                 <button key={t} ref={el=>{ tabRefs.current[t]=el; }} onClick={()=>setTab(t)} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", fontSize:13, fontWeight:on?600:500, cursor:"pointer",
                   borderRadius:9, border:"none", transition:"all 0.2s ease",
                   background:on?"var(--bg-elevated)":"transparent", color:on?"var(--text-primary)":"var(--text-muted)",
-                  boxShadow:on?"0 2px 8px rgba(0,0,0,0.4)":"none" }}>
+                  boxShadow:on?"var(--tab-shadow)":"none" }}>
                   {TAB_LABELS[t]}
                   {t==="requests"&&pendingCount>0&&(<span style={{ width:6, height:6, borderRadius:"50%", background:"var(--gold-bright)" }} />)}
                   {t==="users"&&pendingRegCount>0&&(<span style={{ width:6, height:6, borderRadius:"50%", background:"var(--gold-bright)" }} />)}
@@ -3521,6 +3725,7 @@ function Dashboard({ user, onLogout }) {
               )}
             </div>
           )}
+          <TweaksMenu />
           <div style={{ width:1, height:28, background:"var(--border-subtle)" }} />
           <button onClick={()=>setShowProfile(p=>!p)} style={{ background:st.bg, color:st.color, border:"2px solid "+st.border,
             borderRadius:"50%", width:36, height:36, cursor:"pointer", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>{currentUser.avatar}</button>
@@ -3553,6 +3758,7 @@ function Dashboard({ user, onLogout }) {
       {showInactivity && <InactivityModal countdown={countdown} onStay={()=>{ resetActivity(); }} onLogout={onLogout} />}
     </div>
     </DeptContext.Provider>
+    </PrefsContext.Provider>
   );
 }
 

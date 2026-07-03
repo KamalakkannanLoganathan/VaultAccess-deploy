@@ -10,9 +10,25 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { background: #080f1e; }
+      html, body { background: #070a10; }
       body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
     </style>
+    <script>
+      // Apply saved theme/density before first paint — no flash of the wrong theme.
+      (function () {
+        try {
+          var t = localStorage.getItem('erc-theme');
+          if (['dark','light','grey'].indexOf(t) === -1) t = 'dark';
+          var d = localStorage.getItem('erc-density');
+          if (['compact','comfortable','list'].indexOf(d) === -1) d = 'compact';
+          var r = document.documentElement;
+          r.setAttribute('data-theme', t);
+          r.setAttribute('data-density', d);
+          var bg = t === 'light' ? '#f4f6fa' : t === 'grey' ? '#22272e' : '#070a10';
+          r.style.background = bg;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
