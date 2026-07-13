@@ -992,7 +992,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
         {hasAccess && (
           <div style={{ display:"flex", gap:6, flexShrink:0 }}>
             {showToggle && <button onClick={()=>setShowPw(p=>!p)} disabled={lockedByTime} style={iconBtn(false, lockedByTime)}>{showPw?"🙈":"👁"}</button>}
-            <button onClick={()=>handleCopyField(field==="verify"?value:value, label, copyKey)} disabled={lockedByTime}
+            <button onClick={()=>handleCopyField(field, label, copyKey)} disabled={lockedByTime}
               style={{ ...iconBtn(copied===copyKey, lockedByTime), ...(copied===copyKey?{ animation:"ercBounce 0.3s" }:{}) }}>{copied===copyKey?"✓":"📋"}</button>
           </div>
         )}
