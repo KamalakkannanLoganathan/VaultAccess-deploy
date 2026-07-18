@@ -947,7 +947,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
   const isAllClients = (cred.clientIds||[]).includes("all");
   const myClients = resolveClients(cred, clientsById);
   const privilege = highestPrivilege(myClients);
-  const confidentialBlock = privilege === "confidential" && !isAdmin;
+  const confidentialBlock = false; // confidential logins show fully to team members; the red badge stays a sensitivity label
   const restrictedPw = privilege === "restricted" && !isAdmin;
   const clientColor = isAllClients ? "#f5b800" : (myClients[0] ? myClients[0].color : "#64748b");
   const headTint = hexA(clientColor, 0.15);
@@ -1252,7 +1252,7 @@ function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, o
   const isAdmin = session.team === "admin";
   const myClients = resolveClients(cred, clientsById);
   const privilege = highestPrivilege(myClients);
-  const confidentialBlock = privilege === "confidential" && !isAdmin;
+  const confidentialBlock = false; // confidential logins show fully to team members; the red badge stays a sensitivity label
   const restrictedPw = privilege === "restricted" && !isAdmin;
   const isAllClients = (cred.clientIds||[]).includes("all");
   const inUse = !!cred.inUse, notWorking = !!cred.notWorking;
@@ -3102,7 +3102,7 @@ function ClientModal({ client, onSave, onClose }) {
                   </label>
                 ); })}
             </div>
-            {form.privilegeLevel==="confidential" && <p style={{ fontSize:12, color:"var(--text-muted)", margin:"6px 0 0" }}>Confidential clients are admin-only regardless of allowed teams.</p>}
+            {form.privilegeLevel==="confidential" && <p style={{ fontSize:12, color:"var(--text-muted)", margin:"6px 0 0" }}>Confidential is a sensitivity label — logins are still visible to the teams granted on each login's Team Access.</p>}
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Description</label>
@@ -3203,7 +3203,7 @@ function ClientsTab({ session, toast }) {
                 </div>
                 <div style={{ ...microLabel, marginBottom:6 }}>Allowed teams</div>
                 <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:12, minHeight:22 }}>
-                  {c.allowedTeams.length ? c.allowedTeams.map(t=><TeamBadge key={t} team={t} small />) : <span style={{ fontSize:12, color:"var(--text-muted)" }}>{c.privilegeLevel==="confidential"?"Admin only":"None"}</span>}
+                  {c.allowedTeams.length ? c.allowedTeams.map(t=><TeamBadge key={t} team={t} small />) : <span style={{ fontSize:12, color:"var(--text-muted)" }}>None</span>}
                 </div>
                 {c.description && <p style={{ fontSize:13, color:"var(--text-secondary)", marginBottom:12, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" }}>{c.description}</p>}
                 <div style={{ fontSize:12, color:"var(--text-muted)", marginBottom:12 }}>{credCount(c.id)} credential(s) tagged</div>
