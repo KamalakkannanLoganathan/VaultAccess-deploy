@@ -7,7 +7,7 @@ import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase"
 import {
   getMyProfile, touchLastLogin, updateProfile,
   listCredentials, createCredential, updateCredential, patchCredential, deleteCredential, bulkCreateCredentials,
-  setInUse, setNotWorking, bulkSetAuditOwner,
+  setInUse, setNotWorking, bulkSetAuditOwner, markAudited,
   listUsers, logAudit, listAudit, createRequest, listRequests, resolveRequest,
   listFavourites, toggleFavourite, adminCreateUser, adminResetPassword, adminDeleteUser,
   listDepartments, createDepartment, updateDepartment, deleteDepartment,
@@ -119,6 +119,16 @@ const fmtSmartTime = (ts) => {
   const yd = new Date(now); yd.setDate(now.getDate()-1);
   if (d.toDateString() === yd.toDateString()) return `Yesterday at ${time}`;
   return `${d.toLocaleDateString(undefined,{ month:"short", day:"numeric" })} at ${time}`;
+};
+// Two-week (14-day) audit cadence. Returns the login's audit standing.
+const AUDIT_CADENCE_DAYS = 14;
+const auditState = (cred) => {
+  const ts = cred && cred.lastAuditedAt;
+  if (!ts) return { state:"never", days:null };
+  const days = Math.floor((Date.now() - new Date(ts)) / 86400000);
+  if (days >= AUDIT_CADENCE_DAYS) return { state:"overdue", days };
+  if (days >= AUDIT_CADENCE_DAYS - 2) return { state:"due", days };
+  return { state:"ok", days };
 };
 const canAccess = (cred, team) => {
   if (team === "admin") return true;
@@ -925,7 +935,7 @@ function StatusPopover({ kind, note, setNote, onConfirm, onClose, anchorStyle })
 
 function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
   requests, onRequestAccess, toast, onPatch, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue, index,
-  ownerName, selectable, selected, onToggleSelect }) {
+  ownerName, selectable, selected, onToggleSelect, preview, onMarkAudited }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
   const [popover, setPopover] = useState(null); // 'inuse' | 'report' | 'resolve' | null
@@ -972,6 +982,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
   const finalExtra = (inUse || notWorking) ? { ...cardExtra, ...statusExtra } : cardExtra;
 
   const hasVerify = !!(cred.verifyEmail || cred.verifyText || cred.verifyAuth);
+  const aud = auditState(cred);
   const flash = (key) => { setCopied(key); setTimeout(()=>setCopied(c=>c===key?null:c), 2000); };
 
   const handleCopyField = (value, field, key) => {
@@ -1056,6 +1067,20 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
       </div>
 
       <div style={{ height:1, background:"var(--border-subtle)" }} />
+
+      {/* Audit strip — owner + two-week audit standing (always visible) */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+        {ownerName
+          ? <span title={"Audit owner: "+ownerName} style={{ background:"var(--info-bg)", color:"var(--info)", border:"1px solid rgba(96,165,250,0.35)", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>👤 {ownerName}</span>
+          : <span title="No audit owner assigned" style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.4)", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>⚠ Unassigned</span>}
+        {aud.state==="overdue" && <span title={"Last audited "+timeAgo(cred.lastAuditedAt)} style={{ background:"rgba(239,68,68,0.14)", color:"#f87171", border:"1px solid rgba(239,68,68,0.4)", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>🔴 Audit overdue ({aud.days}d)</span>}
+        {aud.state==="due" && <span title={"Last audited "+timeAgo(cred.lastAuditedAt)} style={{ background:"rgba(167,139,250,0.16)", color:"#c4b5fd", border:"1px solid rgba(167,139,250,0.4)", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>🟣 Audit due soon</span>}
+        {aud.state==="ok" && <span title={"Last audited "+timeAgo(cred.lastAuditedAt)} style={{ background:"var(--success-bg)", color:"var(--success)", border:"1px solid rgba(16,185,129,0.35)", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>✅ Audited {aud.days===0?"today":aud.days+"d ago"}</span>}
+        {aud.state==="never" && <span style={{ background:"var(--hover-bg)", color:"var(--text-muted)", border:"1px solid var(--border-default)", borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>◻ Never audited</span>}
+        {onMarkAudited && aud.state!=="ok" && (
+          <button onClick={()=>onMarkAudited(cred)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"4px 10px", fontSize:11, marginLeft:"auto" }} title="Mark this login audited (resets the 14-day timer)">✓ Mark Audited</button>
+        )}
+      </div>
 
       {/* In Use banner */}
       {inUse && (
@@ -1148,9 +1173,6 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
         {cred.teams==="all"
           ? <span style={{ background:"var(--success-bg)", color:"var(--success)", border:"1px solid rgba(16,185,129,0.3)", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>All Teams</span>
           : (cred.teams||[]).map(t=><TeamBadge key={t} team={t} small />)}
-        {ownerName
-          ? <span title={"Audit owner: "+ownerName} style={{ background:"var(--info-bg)", color:"var(--info)", border:"1px solid rgba(96,165,250,0.3)", borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>👤 {ownerName}</span>
-          : <span title="No audit owner assigned" style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.35)", borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>⚠ Unassigned</span>}
       </div>
 
       <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, flexWrap:"wrap" }}>
@@ -1165,7 +1187,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
       </div>
 
       {/* Status actions (any user with access) */}
-      {hasAccess && (
+      {hasAccess && !preview && (
         <div style={{ position:"relative", display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
           {!inUse ? (
             <button onClick={()=>{ setNote(""); setPopover(p=>p==="inuse"?null:"inuse"); }} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>🟠 Mark In Use</button>
@@ -1195,7 +1217,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
         </div>
       )}
       {/* Admin controls */}
-      {isAdmin && (
+      {isAdmin && !preview && (
         <div style={{ display:"flex", gap:6, flexWrap:"wrap", borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
           <button onClick={()=>onEdit(cred)} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"5px 10px", fontSize:12 }}>✏️ Edit</button>
           <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"5px 10px", fontSize:12 }}>🗑️ Delete</button>
@@ -1206,7 +1228,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
         </div>
       )}
 
-      {!hasAccess && session.team!=="admin" && (
+      {!hasAccess && session.team!=="admin" && !preview && (
         <div style={{ borderTop:"1px solid var(--border-subtle)", paddingTop:8 }}>
           {pendingReq
             ? <span style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.3)", borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:600 }}>Request Pending</span>
@@ -1221,7 +1243,7 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
 const LIST_COLS = "minmax(170px,1.5fr) minmax(120px,1fr) minmax(130px,1.1fr) minmax(90px,auto) auto";
 function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, onFavToggle, isFav,
   requests, onRequestAccess, toast, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue,
-  ownerName, selectable, selected, onToggleSelect }) {
+  ownerName, selectable, selected, onToggleSelect, preview, onMarkAudited }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
   const [popover, setPopover] = useState(null);
@@ -1244,6 +1266,7 @@ function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, o
   const flash = (k)=>{ setCopied(k); setTimeout(()=>setCopied(c=>c===k?null:c),1500); };
   const copy = (val,label,key)=>{ if(!hasAccess||lockedByTime) return; navigator.clipboard.writeText(val).then(()=>{ onCopy&&onCopy(cred,label); flash(key); toast&&toast(label+" copied!","success"); }); };
   const leftAccent = notWorking ? "#ef4444" : inUseStale ? "#f59e0b" : inUse ? "#f97316" : lockedByTime ? "var(--danger)" : "transparent";
+  const aud = auditState(cred);
   const ghost = { ...S.btn("ghost"), padding:"5px 9px", fontSize:12 };
   return (
     <div className="erc-card" style={{ ...glass, borderRadius:12, padding:"0", position:"relative", zIndex: popover?50:undefined,
@@ -1295,24 +1318,29 @@ function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, o
         {ownerName
           ? <span title={"Audit owner: "+ownerName} style={{ color:"var(--info)", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis" }}>👤 {ownerName}</span>
           : <span title="No audit owner assigned" style={{ color:"#fcd34d", fontWeight:600 }}>⚠ Unassigned</span>}
+        {aud.state==="overdue" ? <span title={"Last audited "+timeAgo(cred.lastAuditedAt)} style={{ color:"#f87171", fontWeight:600 }}>🔴 Audit overdue {aud.days}d</span>
+          : aud.state==="due" ? <span title={"Last audited "+timeAgo(cred.lastAuditedAt)} style={{ color:"#c4b5fd", fontWeight:600 }}>🟣 Audit due soon</span>
+          : aud.state==="ok" ? <span title={"Last audited "+timeAgo(cred.lastAuditedAt)} style={{ color:"var(--success)" }}>✅ Audited {aud.days===0?"today":aud.days+"d ago"}</span>
+          : <span style={{ color:"var(--text-muted)" }}>◻ Never audited</span>}
       </div>
       {/* Col 5 — actions */}
       <div style={{ position:"relative", display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", flexWrap:"wrap", padding:"8px 0" }}>
-        {hasAccess && (!inUse
+        {onMarkAudited && aud.state!=="ok" && <button onClick={()=>onMarkAudited(cred)} className="erc-ghost" style={ghost} title="Mark audited (14-day cadence)">✓ Audit</button>}
+        {!preview && hasAccess && (!inUse
           ? <button onClick={()=>{ setNote(""); setPopover(p=>p==="inuse"?null:"inuse"); }} className="erc-ghost" style={ghost} title="Mark In Use">🟠</button>
           : (iTagged||isAdmin)
             ? <button onClick={()=>onReleaseInUse(cred)} style={{ ...ghost, color:"#fb923c", borderColor:"rgba(249,115,22,0.4)" }} title="Release">Release</button>
             : null)}
-        {hasAccess && (!notWorking
+        {!preview && hasAccess && (!notWorking
           ? <button onClick={()=>{ setNote(""); setPopover(p=>p==="report"?null:"report"); }} className="erc-ghost" style={ghost} title="Report Issue">⚠️</button>
           : isAdmin
             ? <button onClick={()=>{ setNote(""); setPopover(p=>p==="resolve"?null:"resolve"); }} className="erc-prim" style={{ ...S.btn("primary"), padding:"5px 9px", fontSize:12 }} title="Mark Resolved">✓</button>
             : iReported
               ? <button onClick={()=>{ setNote(cred.notWorkingNote||""); setPopover(p=>p==="report"?null:"report"); }} style={ghost} title="Update note">Note</button>
               : null)}
-        {isAdmin && <button onClick={()=>onEdit(cred)} className="erc-ghost" style={ghost} title="Edit">✏️</button>}
-        {isAdmin && <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"5px 9px", fontSize:12 }} title="Delete">🗑️</button>}
-        {!hasAccess && !isAdmin && (pendingReq
+        {!preview && isAdmin && <button onClick={()=>onEdit(cred)} className="erc-ghost" style={ghost} title="Edit">✏️</button>}
+        {!preview && isAdmin && <button onClick={()=>onDelete(cred)} style={{ ...S.btn("danger"), padding:"5px 9px", fontSize:12 }} title="Delete">🗑️</button>}
+        {!preview && !hasAccess && !isAdmin && (pendingReq
           ? <span style={{ fontSize:11, color:"#fcd34d" }}>Pending</span>
           : <button onClick={()=>onRequestAccess(cred)} className="erc-ghost" style={{ ...ghost, color:"var(--info)", borderColor:"rgba(96,165,250,0.3)" }}>🔑 Request</button>)}
         {popover && (
@@ -2352,8 +2380,11 @@ function CredentialsTab({ session, toast }) {
   const [ownerFilter, setOwnerFilter] = useState("all"); // "all" | "unassigned" | userId
   const [selectedIds, setSelectedIds] = useState(() => new Set()); // bulk-assign selection
   const [bulkOwner, setBulkOwner] = useState(""); // "" = unassigned, else userId
+  const [assignMode, setAssignMode] = useState(false); // show selection checkboxes only during assignment
+  const [auditDueOnly, setAuditDueOnly] = useState(false); // filter: due/overdue for audit
+  const [viewAsUserId, setViewAsUserId] = useState(""); // admin "view as" preview ("" = self)
 
-  const isAdmin = session.team==="admin";
+  const realIsAdmin = session.team==="admin";
   const dctx = useDepts();
 
   const loadAll = useCallback(async () => {
@@ -2375,12 +2406,20 @@ function CredentialsTab({ session, toast }) {
   const usersById = useMemo(() => Object.fromEntries(users.map(u=>[u.id, u])), [users]);
   const ownerName = useCallback((id) => (id && usersById[id] ? usersById[id].name : null), [usersById]);
   const toggleSelect = useCallback((id) => setSelectedIds(prev => { const n=new Set(prev); if(n.has(id)) n.delete(id); else n.add(id); return n; }), []);
-  const accessible = creds.filter(c=>canAccess(c,session.team));
+
+  // "View as" — admin previews the app exactly as another user sees it (read-only).
+  const previewUser = viewAsUserId && realIsAdmin ? usersById[viewAsUserId] : null;
+  const viewingAs = !!previewUser;
+  const viewSession = viewingAs ? { ...session, team: previewUser.team, userId: previewUser.id, userName: previewUser.name } : session;
+  const isAdmin = viewSession.team === "admin"; // EFFECTIVE admin used for rendering/filtering
+
+  const accessible = creds.filter(c=>canAccess(c,viewSession.team));
   const clientNames = ["All",...[...new Set(creds.flatMap(c=>c.clientNames||[]).filter(n=>n&&n!=="All Clients"))].sort()];
   const portalNames = [...new Set(creds.map(c=>c.portal))].sort();
 
   const inUseList = (isAdmin?creds:accessible).filter(c=>c.inUse);
   const notWorkingList = (isAdmin?creds:accessible).filter(c=>c.notWorking);
+  const auditOverdueList = (isAdmin?creds:accessible).filter(c=>auditState(c).state==="overdue");
 
   const restrictBase = isAdmin?creds:accessible;
   const restrictedCount = restrictBase.filter(c=>isRestrictedState(evalTimeRestriction(c.timeRestriction).state)).length;
@@ -2397,7 +2436,8 @@ function CredentialsTab({ session, toast }) {
     const miu=!inUseOnly||c.inUse;
     const mnw=!notWorkingOnly||c.notWorking;
     const mo=ownerFilter==="all"||(ownerFilter==="unassigned"?!c.auditOwner:c.auditOwner===ownerFilter);
-    return ms&&mcl&&mp&&mr&&miu&&mnw&&mo;
+    const mad=!auditDueOnly||["due","overdue","never"].includes(auditState(c).state);
+    return ms&&mcl&&mp&&mr&&miu&&mnw&&mo&&mad;
   }).sort((a,b)=>{
     if(sort==="A-Z") return a.portal.localeCompare(b.portal);
     if(sort==="Newest") return new Date(b.addedAt)-new Date(a.addedAt);
@@ -2465,9 +2505,18 @@ function CredentialsTab({ session, toast }) {
         }
       }
       toast(`Assigned ${ids.length} login(s) to ${ownerLabel(newOwner)}`,"success");
-      setSelectedIds(new Set()); setBulkOwner("");
+      setSelectedIds(new Set()); setBulkOwner(""); setAssignMode(false);
       await loadAll();
     } catch (e) { toast(e.message && e.message.includes("audit_owner") ? "Run migration_8_audit_owner.sql in Supabase first." : e.message,"error"); }
+  };
+
+  const handleMarkAudited = async (cred) => {
+    try {
+      await markAudited(cred.id, session.userName, session.userId);
+      logAudit({ userId:session.userId, userName:session.userName, action:"credential_audited", credentialId:cred.id, credentialName:cred.portal, detail:"Marked audited (14-day cadence)" });
+      toast(`✅ ${cred.portal} marked audited`,"success");
+      await loadAll();
+    } catch (e) { toast(e.message && e.message.includes("function") ? "Run migration_9_audit_cadence.sql in Supabase first." : e.message,"error"); }
   };
 
   const handleDelete = async (c) => {
@@ -2788,19 +2837,45 @@ function CredentialsTab({ session, toast }) {
   const collWrap = listMode
     ? { display:"flex", flexDirection:"column", gap:8 }
     : { display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:"var(--grid-gap)", alignItems:"stretch" };
+  const selectable = realIsAdmin && assignMode && !viewingAs;
+  const canAudit = (c) => realIsAdmin || (c.auditOwner && c.auditOwner === session.userId); // admin or assigned owner
   const renderCred = (c, i, fav) => listMode
-    ? <CredentialRow key={c.id} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
+    ? <CredentialRow key={c.id} cred={c} session={viewSession} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
         onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={fav} requests={requests} onRequestAccess={setRequestCred} toast={toast}
-        ownerName={ownerName(c.auditOwner)} selectable={isAdmin} selected={selectedIds.has(c.id)} onToggleSelect={toggleSelect}
+        ownerName={ownerName(c.auditOwner)} selectable={selectable} selected={selectedIds.has(c.id)} onToggleSelect={toggleSelect}
+        preview={viewingAs} onMarkAudited={canAudit(c)&&!viewingAs?handleMarkAudited:null}
         onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
-    : <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
+    : <CredentialCard key={c.id} index={i} cred={c} session={viewSession} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
         onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={fav} requests={requests}
         onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
-        ownerName={ownerName(c.auditOwner)} selectable={isAdmin} selected={selectedIds.has(c.id)} onToggleSelect={toggleSelect}
+        ownerName={ownerName(c.auditOwner)} selectable={selectable} selected={selectedIds.has(c.id)} onToggleSelect={toggleSelect}
+        preview={viewingAs} onMarkAudited={canAudit(c)&&!viewingAs?handleMarkAudited:null}
         onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />;
 
   return (
     <div className="erc-page">
+      {viewingAs && (
+        <div style={{ background:"linear-gradient(90deg, rgba(167,139,250,0.16) 0%, rgba(167,139,250,0.05) 100%)",
+          borderLeft:"3px solid #a78bfa", border:"1px solid rgba(167,139,250,0.3)", borderRadius:12, padding:"12px 16px",
+          marginBottom:12, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap", position:"sticky", top:70, zIndex:90 }}>
+          <span style={{ fontSize:18 }}>👁</span>
+          <span style={{ color:"#c4b5fd", fontWeight:600, fontSize:14, flex:1 }}>
+            Viewing as <strong>{previewUser.name}</strong> ({dctx?dctx.teamLabel(previewUser.team):previewUser.team}) — read-only preview of what they can see
+          </span>
+          <button onClick={()=>setViewAsUserId("")} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"6px 14px", fontSize:13 }}>Exit preview</button>
+        </div>
+      )}
+      {isAdmin && !viewingAs && auditOverdueList.length>0 && (
+        <div style={{ background:"linear-gradient(90deg, rgba(167,139,250,0.14) 0%, rgba(167,139,250,0.04) 100%)",
+          borderLeft:"3px solid #a78bfa", border:"1px solid rgba(167,139,250,0.25)", borderRadius:12, padding:"12px 16px",
+          marginBottom:12, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+          <span style={{ width:30, height:30, borderRadius:"50%", background:"rgba(167,139,250,0.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>🗓️</span>
+          <span style={{ color:"#c4b5fd", fontWeight:600, fontSize:14, flex:1 }}>
+            {auditOverdueList.length} login(s) overdue for audit (14-day cadence) — {auditOverdueList.slice(0,3).map(c=>c.portal).join(", ")}{auditOverdueList.length>3?`, +${auditOverdueList.length-3} more`:""}
+          </span>
+          <button onClick={()=>{ setAuditDueOnly(true); }} style={{ background:"none", border:"none", color:"#a78bfa", cursor:"pointer", fontSize:13, fontWeight:600 }}>View All →</button>
+        </div>
+      )}
       {notWorkingList.length>0 && (
         <div style={{ background:"linear-gradient(90deg, rgba(239,68,68,0.12) 0%, rgba(239,68,68,0.05) 100%)",
           borderLeft:"3px solid #ef4444", border:"1px solid rgba(239,68,68,0.25)", borderRadius:12, padding:"12px 16px",
@@ -2875,14 +2950,22 @@ function CredentialsTab({ session, toast }) {
         <button onClick={()=>setRestrictedOnly(v=>!v)} style={catPill(restrictedOnly)}>⏰ Time-Restricted</button>
         <button onClick={()=>setInUseOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(inUseOnly?"#f97316":"var(--border-default)"), background:inUseOnly?"rgba(249,115,22,0.15)":"transparent", color:inUseOnly?"#f97316":"var(--text-secondary)" }}>🟠 In Use</button>
         <button onClick={()=>setNotWorkingOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(notWorkingOnly?"#ef4444":"var(--border-default)"), background:notWorkingOnly?"rgba(239,68,68,0.15)":"transparent", color:notWorkingOnly?"#f87171":"var(--text-secondary)" }}>❌ Not Working</button>
-        {isAdmin && (
-          <div style={{ display:"flex", gap:8, marginLeft:"auto", flexWrap:"wrap" }}>
-            <label className="erc-ghost" style={{ ...S.btn("ghost"), cursor:"pointer" }}>
-              📥 Import<input type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFileImport} />
-            </label>
-            <button onClick={handleExport} className="erc-ghost" style={S.btn("ghost")}>📤 Export</button>
-            <button onClick={handleTemplate} className="erc-ghost" style={S.btn("ghost")}>📋 Template</button>
-            <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>
+        <button onClick={()=>setAuditDueOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(auditDueOnly?"#a78bfa":"var(--border-default)"), background:auditDueOnly?"rgba(167,139,250,0.15)":"transparent", color:auditDueOnly?"#a78bfa":"var(--text-secondary)" }}>🗓️ Audit Due</button>
+        {realIsAdmin && (
+          <div style={{ display:"flex", gap:8, marginLeft:"auto", flexWrap:"wrap", alignItems:"center" }}>
+            <select value={viewAsUserId} onChange={e=>{ setViewAsUserId(e.target.value); setAssignMode(false); setSelectedIds(new Set()); }} style={{ ...S.input(), width:"auto" }} title="View the vault as another user (read-only)">
+              <option value="">👁 View as… (me)</option>
+              {users.filter(u=>u.id!==session.userId).map(u=><option key={u.id} value={u.id}>View as {u.name}</option>)}
+            </select>
+            {!viewingAs && <button onClick={()=>{ setAssignMode(m=>!m); setSelectedIds(new Set()); }} style={catPill(assignMode)}>☑ {assignMode?"Assigning…":"Assign owners"}</button>}
+            {!viewingAs && <>
+              <label className="erc-ghost" style={{ ...S.btn("ghost"), cursor:"pointer" }}>
+                📥 Import<input type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFileImport} />
+              </label>
+              <button onClick={handleExport} className="erc-ghost" style={S.btn("ghost")}>📤 Export</button>
+              <button onClick={handleTemplate} className="erc-ghost" style={S.btn("ghost")}>📋 Template</button>
+              <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>
+            </>}
           </div>
         )}
       </div>
@@ -2894,24 +2977,25 @@ function CredentialsTab({ session, toast }) {
         </div>
       )}
 
-      {isAdmin && selectedIds.size>0 && (
+      {realIsAdmin && assignMode && (
         <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:14, padding:"10px 14px",
-          background:"var(--gold-dim)", border:"1px solid "+hexA("#f5b800",0.4), borderRadius:12 }}>
+          background:"var(--gold-dim)", border:"1px solid "+hexA("#f5b800",0.4), borderRadius:12, position:"sticky", top:70, zIndex:80 }}>
           <span style={{ fontSize:13, fontWeight:700, color:"var(--text-gold)" }}>{selectedIds.size} selected</span>
-          <span style={{ fontSize:13, color:"var(--text-secondary)" }}>Assign audit owner:</span>
+          <span style={{ fontSize:13, color:"var(--text-secondary)" }}>{selectedIds.size===0?"Tick logins to assign — ":""}Assign audit owner:</span>
           <select value={bulkOwner} onChange={e=>setBulkOwner(e.target.value)} style={{ ...S.input(), width:"auto" }}>
             <option value="">— Unassigned —</option>
             {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
-          <button onClick={handleBulkAssign} className="erc-prim" style={{ ...S.btn("primary"), padding:"7px 14px", fontSize:13 }}>Assign</button>
-          <button onClick={()=>setSelectedIds(new Set())} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"7px 12px", fontSize:13 }}>Clear</button>
+          <button onClick={handleBulkAssign} disabled={selectedIds.size===0} className="erc-prim" style={{ ...S.btn("primary"), padding:"7px 14px", fontSize:13, opacity:selectedIds.size===0?0.5:1 }}>Assign</button>
+          {selectedIds.size>0 && <button onClick={()=>setSelectedIds(new Set())} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"7px 12px", fontSize:13 }}>Clear</button>}
+          <button onClick={()=>{ setAssignMode(false); setSelectedIds(new Set()); }} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"7px 12px", fontSize:13 }}>Done</button>
         </div>
       )}
 
       <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14 }}>{filtered.length} credential(s) found</div>
 
       {filtered.length===0 ? (
-        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly||inUseOnly||notWorkingOnly||ownerFilter!=="all"
+        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly||inUseOnly||notWorkingOnly||ownerFilter!=="all"||auditDueOnly||viewingAs
           ? <EmptyState icon="🔍" title="Nothing matched" sub="Try different search terms or clear filters" />
           : <EmptyState icon="🔑" title="No credentials yet" sub="Add your first credential to get started"
               action={isAdmin && <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>} />
@@ -3478,7 +3562,7 @@ function AuditTab({ session, toast }) {
   useEffect(() => { listAudit().then(setAudit).catch(e=>toast(e.message,"error")).finally(()=>setLoading(false)); }, [toast]);
 
   const actionColors = {
-    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981", client_created:"#10b981", user_approved_registration:"#10b981", resolve_not_working:"#10b981",
+    add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981", client_created:"#10b981", user_approved_registration:"#10b981", resolve_not_working:"#10b981", credential_audited:"#10b981",
     login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa", release_in_use:"#60a5fa", assign_audit_owner:"#a78bfa",
     edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b", client_edited:"#f59e0b", bulk_import_overwrite:"#f59e0b", mark_in_use:"#f97316",
     delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444", client_archived:"#ef4444", user_rejected_registration:"#ef4444", report_not_working:"#ef4444",

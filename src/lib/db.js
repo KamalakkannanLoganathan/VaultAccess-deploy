@@ -21,6 +21,7 @@ const credFromRow = (r) => ({
   notWorkingReportedById: r.not_working_reported_by_id || null, notWorkingAt: r.not_working_at || null,
   notWorkingNote: r.not_working_note || null, notWorkingHistory: Array.isArray(r.not_working_history) ? r.not_working_history : [],
   auditOwner: r.audit_owner || null,
+  lastAuditedAt: r.last_audited_at || null, lastAuditedBy: r.last_audited_by || null,
   addedBy: r.added_by || "", addedAt: r.added_at, updatedAt: r.updated_at,
 });
 
@@ -127,6 +128,13 @@ export async function patchCredential(id, patch) {
   }
   if ("auditOwner" in patch) row.audit_owner = patch.auditOwner || null;
   const { error } = await supabase.from("credentials").update(row).eq("id", id);
+  if (error) throw error;
+}
+
+// Stamp a login as audited now (admin or the assigned audit owner). Uses a
+// SECURITY DEFINER RPC so the owning member can write without full edit rights.
+export async function markAudited(credId, by, byId) {
+  const { error } = await supabase.rpc("cred_mark_audited", { cred_id: credId, p_by: by || null, p_by_id: byId || null });
   if (error) throw error;
 }
 
