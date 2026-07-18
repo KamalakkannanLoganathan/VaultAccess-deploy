@@ -20,6 +20,7 @@ const credFromRow = (r) => ({
   notWorking: !!r.not_working, notWorkingReportedBy: r.not_working_reported_by || null,
   notWorkingReportedById: r.not_working_reported_by_id || null, notWorkingAt: r.not_working_at || null,
   notWorkingNote: r.not_working_note || null, notWorkingHistory: Array.isArray(r.not_working_history) ? r.not_working_history : [],
+  auditOwner: r.audit_owner || null,
   addedBy: r.added_by || "", addedAt: r.added_at, updatedAt: r.updated_at,
 });
 
@@ -34,6 +35,7 @@ const credToRow = (c) => {
     time_restriction: c.timeRestriction || null,
     all_teams: all, teams: all ? [] : (Array.isArray(c.teams) ? c.teams : []),
     password_expiry_days: c.passwordExpiryDays || 90,
+    audit_owner: c.auditOwner || null,
   };
 };
 
@@ -123,7 +125,17 @@ export async function patchCredential(id, patch) {
     row.all_teams = all;
     row.teams = all ? [] : patch.teams;
   }
+  if ("auditOwner" in patch) row.audit_owner = patch.auditOwner || null;
   const { error } = await supabase.from("credentials").update(row).eq("id", id);
+  if (error) throw error;
+}
+
+// Bulk-assign the audit owner across many credentials in one write (admin).
+export async function bulkSetAuditOwner(ids, ownerId) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const { error } = await supabase.from("credentials")
+    .update({ audit_owner: ownerId || null, updated_at: new Date().toISOString() })
+    .in("id", ids);
   if (error) throw error;
 }
 

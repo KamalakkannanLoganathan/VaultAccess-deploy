@@ -7,7 +7,7 @@ import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase"
 import {
   getMyProfile, touchLastLogin, updateProfile,
   listCredentials, createCredential, updateCredential, patchCredential, deleteCredential, bulkCreateCredentials,
-  setInUse, setNotWorking,
+  setInUse, setNotWorking, bulkSetAuditOwner,
   listUsers, logAudit, listAudit, createRequest, listRequests, resolveRequest,
   listFavourites, toggleFavourite, adminCreateUser, adminResetPassword, adminDeleteUser,
   listDepartments, createDepartment, updateDepartment, deleteDepartment,
@@ -924,7 +924,8 @@ function StatusPopover({ kind, note, setNote, onConfirm, onClose, anchorStyle })
 }
 
 function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, onCopyVerify, onFavToggle, isFav,
-  requests, onRequestAccess, toast, onPatch, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue, index }) {
+  requests, onRequestAccess, toast, onPatch, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue, index,
+  ownerName, selectable, selected, onToggleSelect }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
   const [popover, setPopover] = useState(null); // 'inuse' | 'report' | 'resolve' | null
@@ -1008,6 +1009,10 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
         <div style={{ display:"flex", gap:10, flex:1, minWidth:0 }}>
+          {selectable && (
+            <input type="checkbox" checked={!!selected} onChange={()=>onToggleSelect(cred.id)} title="Select for bulk assign"
+              style={{ width:16, height:16, marginTop:10, cursor:"pointer", accentColor:"var(--gold-bright)", flexShrink:0 }} />
+          )}
           <span style={{ width:36, height:36, borderRadius:"50%", background:headTint, border:"1px solid "+hexA(clientColor,0.3),
             display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>🔑</span>
           <div style={{ minWidth:0 }}>
@@ -1139,10 +1144,13 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
       <div style={{ flex:"1 1 auto" }} />
 
       {/* Footer */}
-      <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+      <div style={{ display:"flex", gap:4, flexWrap:"wrap", alignItems:"center" }}>
         {cred.teams==="all"
           ? <span style={{ background:"var(--success-bg)", color:"var(--success)", border:"1px solid rgba(16,185,129,0.3)", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:600 }}>All Teams</span>
           : (cred.teams||[]).map(t=><TeamBadge key={t} team={t} small />)}
+        {ownerName
+          ? <span title={"Audit owner: "+ownerName} style={{ background:"var(--info-bg)", color:"var(--info)", border:"1px solid rgba(96,165,250,0.3)", borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>👤 {ownerName}</span>
+          : <span title="No audit owner assigned" style={{ background:"var(--warning-bg)", color:"#fcd34d", border:"1px solid rgba(245,158,11,0.35)", borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600 }}>⚠ Unassigned</span>}
       </div>
 
       <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, flexWrap:"wrap" }}>
@@ -1212,7 +1220,8 @@ function CredentialCard({ cred, session, clientsById, onEdit, onDelete, onCopy, 
 // ─── Credential row (List density) — one credential per row, aligned columns ──
 const LIST_COLS = "minmax(170px,1.5fr) minmax(120px,1fr) minmax(130px,1.1fr) minmax(90px,auto) auto";
 function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, onFavToggle, isFav,
-  requests, onRequestAccess, toast, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue }) {
+  requests, onRequestAccess, toast, onMarkInUse, onReleaseInUse, onReportIssue, onResolveIssue,
+  ownerName, selectable, selected, onToggleSelect }) {
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(null);
   const [popover, setPopover] = useState(null);
@@ -1243,6 +1252,10 @@ function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, o
       background: (inUse||notWorking) ? "linear-gradient(135deg, "+(notWorking?"rgba(239,68,68,0.06)":"rgba(249,115,22,0.05)")+" 0%, var(--surface-grad-2) 60%)" : undefined }}>
       {/* Col 1 — portal + client + status dots + fav */}
       <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0, padding:"10px 0" }}>
+        {selectable && (
+          <input type="checkbox" checked={!!selected} onChange={()=>onToggleSelect(cred.id)} title="Select for bulk assign"
+            style={{ width:15, height:15, cursor:"pointer", accentColor:"var(--gold-bright)", flexShrink:0 }} />
+        )}
         <button onClick={()=>onFavToggle(cred.id)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:16, color:isFav?"var(--gold-bright)":"var(--text-muted)", padding:0, flexShrink:0 }}>★</button>
         <span style={{ minWidth:0 }}>
           <span style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -1272,13 +1285,16 @@ function CredentialRow({ cred, session, clientsById, onEdit, onDelete, onCopy, o
             <button onClick={()=>copy(cred.password,"Password","p")} disabled={lockedByTime} style={{ ...iconBtn(copied==="p",lockedByTime), width:26, height:26, fontSize:11 }}>{copied==="p"?"✓":"📋"}</button>
           </>) : <span style={{ fontSize:12, color:"var(--text-muted)" }}>—</span>}
       </div>
-      {/* Col 4 — status */}
-      <div style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap" }}>
-        {notWorking ? <span style={{ color:"#f87171", fontWeight:600 }}>❌ Not working</span>
+      {/* Col 4 — status + audit owner */}
+      <div style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap", display:"flex", flexDirection:"column", gap:3, minWidth:0 }}>
+        <span>{notWorking ? <span style={{ color:"#f87171", fontWeight:600 }}>❌ Not working</span>
           : inUse ? <span style={{ color:inUseStale?"#fcd34d":"#fdba74", fontWeight:600 }}>🟠 {cred.inUseBy}</span>
           : tr.state==="active" ? <span style={{ color:"var(--success)", fontWeight:600 }}>🟢 Active</span>
           : lockedByTime ? <span style={{ color:"var(--danger)", fontWeight:600 }}>🔴 Restricted</span>
-          : <span>{age}d old</span>}
+          : <span>{age}d old</span>}</span>
+        {ownerName
+          ? <span title={"Audit owner: "+ownerName} style={{ color:"var(--info)", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis" }}>👤 {ownerName}</span>
+          : <span title="No audit owner assigned" style={{ color:"#fcd34d", fontWeight:600 }}>⚠ Unassigned</span>}
       </div>
       {/* Col 5 — actions */}
       <div style={{ position:"relative", display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", flexWrap:"wrap", padding:"8px 0" }}>
@@ -1430,7 +1446,7 @@ function PortalFilter({ portals, creds, selected, onChange }) {
 }
 
 // ─── Credential Modal ─────────────────────────────────────────────────────────
-function CredModal({ cred, onSave, onClose, session, clients }) {
+function CredModal({ cred, onSave, onClose, session, clients, users }) {
   const [form, setForm] = useState(cred
     ? { verifyEmail:"", verifyText:"", verifyAuth:"", timeRestriction:null, ...cred }
     : { portal:"", url:"", username:"", password:"", clientIds:[], clientNames:[],
@@ -1635,6 +1651,17 @@ function CredModal({ cred, onSave, onClose, session, clients }) {
               {[30,60,90,180].map(d=><option key={d} value={d}>{d} days</option>)}
             </select>
           </div>
+
+          {isAdmin && (
+            <div style={{ marginBottom:20 }}>
+              <label style={S.label}>Audit Owner</label>
+              <select value={form.auditOwner||""} onChange={e=>set("auditOwner", e.target.value||null)} style={S.input()}>
+                <option value="">— Unassigned —</option>
+                {(users||[]).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+              <p style={{ fontSize:11, color:"var(--text-muted)", margin:"6px 0 0" }}>Team member responsible for periodically auditing this login.</p>
+            </div>
+          )}
 
           {cred && isAdmin && (
             <div style={{ marginBottom:14 }}>
@@ -2321,25 +2348,33 @@ function CredentialsTab({ session, toast }) {
   const [requests, setRequests] = useState([]);
   const [recentViewed, setRecentViewed] = useState([]);
   const [warnDismissed, setWarnDismissed] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [ownerFilter, setOwnerFilter] = useState("all"); // "all" | "unassigned" | userId
+  const [selectedIds, setSelectedIds] = useState(() => new Set()); // bulk-assign selection
+  const [bulkOwner, setBulkOwner] = useState(""); // "" = unassigned, else userId
 
   const isAdmin = session.team==="admin";
   const dctx = useDepts();
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, f, r, cl] = await Promise.all([
+      const [c, f, r, cl, u] = await Promise.all([
         listCredentials(),
         listFavourites(session.userId).catch(()=>[]),
         listRequests().catch(()=>[]),
         listClients().catch(()=>[]),
+        listUsers().catch(()=>[]),
       ]);
-      setCreds(c); setFavs(f); setRequests(r); setClients(cl);
+      setCreds(c); setFavs(f); setRequests(r); setClients(cl); setUsers(u);
     } catch (e) { toast(e.message,"error"); } finally { setLoading(false); }
   }, [session.userId, toast]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
   const clientsById = useMemo(() => Object.fromEntries(clients.map(c=>[c.id, c])), [clients]);
+  const usersById = useMemo(() => Object.fromEntries(users.map(u=>[u.id, u])), [users]);
+  const ownerName = useCallback((id) => (id && usersById[id] ? usersById[id].name : null), [usersById]);
+  const toggleSelect = useCallback((id) => setSelectedIds(prev => { const n=new Set(prev); if(n.has(id)) n.delete(id); else n.add(id); return n; }), []);
   const accessible = creds.filter(c=>canAccess(c,session.team));
   const clientNames = ["All",...[...new Set(creds.flatMap(c=>c.clientNames||[]).filter(n=>n&&n!=="All Clients"))].sort()];
   const portalNames = [...new Set(creds.map(c=>c.portal))].sort();
@@ -2361,7 +2396,8 @@ function CredentialsTab({ session, toast }) {
     const mr=!restrictedOnly||(c.timeRestriction&&c.timeRestriction.enabled);
     const miu=!inUseOnly||c.inUse;
     const mnw=!notWorkingOnly||c.notWorking;
-    return ms&&mcl&&mp&&mr&&miu&&mnw;
+    const mo=ownerFilter==="all"||(ownerFilter==="unassigned"?!c.auditOwner:c.auditOwner===ownerFilter);
+    return ms&&mcl&&mp&&mr&&miu&&mnw&&mo;
   }).sort((a,b)=>{
     if(sort==="A-Z") return a.portal.localeCompare(b.portal);
     if(sort==="Newest") return new Date(b.addedAt)-new Date(a.addedAt);
@@ -2391,12 +2427,47 @@ function CredentialsTab({ session, toast }) {
     try { await toggleFavourite(session.userId, id, on); } catch (e) { toast(e.message,"error"); loadAll(); }
   };
 
+  const ownerLabel = (id) => (id && usersById[id] ? usersById[id].name : "Unassigned");
   const handleSave = async (c) => {
     try {
-      if (c.id) { await updateCredential(c.id, c); logAudit({ userId:session.userId, userName:session.userName, action:"edit", credentialId:c.id, credentialName:c.portal }); toast("Credential updated!","success"); }
-      else { const created = await createCredential(c, session.userName); logAudit({ userId:session.userId, userName:session.userName, action:"add", credentialId:created.id, credentialName:created.portal }); toast("Credential added!","success"); }
+      if (c.id) {
+        const prev = creds.find(x=>x.id===c.id);
+        const prevOwner = prev ? (prev.auditOwner||null) : null;
+        const nextOwner = c.auditOwner || null;
+        await updateCredential(c.id, c);
+        logAudit({ userId:session.userId, userName:session.userName, action:"edit", credentialId:c.id, credentialName:c.portal });
+        if (prevOwner !== nextOwner) {
+          logAudit({ userId:session.userId, userName:session.userName, action:"assign_audit_owner", credentialId:c.id, credentialName:c.portal,
+            detail:`Audit owner: ${ownerLabel(prevOwner)} → ${ownerLabel(nextOwner)}` });
+        }
+        toast("Credential updated!","success");
+      }
+      else { const created = await createCredential(c, session.userName); logAudit({ userId:session.userId, userName:session.userName, action:"add", credentialId:created.id, credentialName:created.portal });
+        if (c.auditOwner) logAudit({ userId:session.userId, userName:session.userName, action:"assign_audit_owner", credentialId:created.id, credentialName:created.portal, detail:`Audit owner: Unassigned → ${ownerLabel(c.auditOwner)}` });
+        toast("Credential added!","success"); }
       setEditCred(null); setShowAdd(false); await loadAll();
     } catch (e) { toast(e.message,"error"); }
+  };
+
+  const handleBulkAssign = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    const newOwner = bulkOwner || null;
+    const targets = creds.filter(c => selectedIds.has(c.id));
+    try {
+      await bulkSetAuditOwner(ids, newOwner);
+      // One audit entry per credential: old owner → new owner (names/ids only).
+      for (const c of targets) {
+        const prevOwner = c.auditOwner || null;
+        if (prevOwner !== newOwner) {
+          logAudit({ userId:session.userId, userName:session.userName, action:"assign_audit_owner", credentialId:c.id, credentialName:c.portal,
+            detail:`Audit owner (bulk): ${ownerLabel(prevOwner)} → ${ownerLabel(newOwner)}` });
+        }
+      }
+      toast(`Assigned ${ids.length} login(s) to ${ownerLabel(newOwner)}`,"success");
+      setSelectedIds(new Set()); setBulkOwner("");
+      await loadAll();
+    } catch (e) { toast(e.message && e.message.includes("audit_owner") ? "Run migration_8_audit_owner.sql in Supabase first." : e.message,"error"); }
   };
 
   const handleDelete = async (c) => {
@@ -2720,10 +2791,12 @@ function CredentialsTab({ session, toast }) {
   const renderCred = (c, i, fav) => listMode
     ? <CredentialRow key={c.id} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
         onCopy={handleCopy} onFavToggle={handleFavToggle} isFav={fav} requests={requests} onRequestAccess={setRequestCred} toast={toast}
+        ownerName={ownerName(c.auditOwner)} selectable={isAdmin} selected={selectedIds.has(c.id)} onToggleSelect={toggleSelect}
         onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />
     : <CredentialCard key={c.id} index={i} cred={c} session={session} clientsById={clientsById} onEdit={setEditCred} onDelete={setDeleteCredState}
         onCopy={handleCopy} onCopyVerify={handleCopyVerify} onFavToggle={handleFavToggle} isFav={fav} requests={requests}
         onRequestAccess={setRequestCred} toast={toast} onPatch={handlePatch}
+        ownerName={ownerName(c.auditOwner)} selectable={isAdmin} selected={selectedIds.has(c.id)} onToggleSelect={toggleSelect}
         onMarkInUse={handleMarkInUse} onReleaseInUse={handleReleaseInUse} onReportIssue={handleReportIssue} onResolveIssue={handleResolveIssue} />;
 
   return (
@@ -2794,6 +2867,11 @@ function CredentialsTab({ session, toast }) {
           {["A-Z","Newest","Oldest","Expiring Soon"].map(s=><option key={s}>{s}</option>)}
         </select>
         <PortalFilter portals={portalNames} creds={baseList} selected={portalFilter} onChange={setPortalFilter} />
+        <select value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)} style={{ ...S.input(), width:"auto" }} title="Filter by audit owner">
+          <option value="all">All owners</option>
+          <option value="unassigned">⚠ Unassigned</option>
+          {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
         <button onClick={()=>setRestrictedOnly(v=>!v)} style={catPill(restrictedOnly)}>⏰ Time-Restricted</button>
         <button onClick={()=>setInUseOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(inUseOnly?"#f97316":"var(--border-default)"), background:inUseOnly?"rgba(249,115,22,0.15)":"transparent", color:inUseOnly?"#f97316":"var(--text-secondary)" }}>🟠 In Use</button>
         <button onClick={()=>setNotWorkingOnly(v=>!v)} style={{ padding:"8px 14px", fontSize:13, borderRadius:8, cursor:"pointer", fontWeight:600, border:"1px solid "+(notWorkingOnly?"#ef4444":"var(--border-default)"), background:notWorkingOnly?"rgba(239,68,68,0.15)":"transparent", color:notWorkingOnly?"#f87171":"var(--text-secondary)" }}>❌ Not Working</button>
@@ -2816,10 +2894,24 @@ function CredentialsTab({ session, toast }) {
         </div>
       )}
 
+      {isAdmin && selectedIds.size>0 && (
+        <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:14, padding:"10px 14px",
+          background:"var(--gold-dim)", border:"1px solid "+hexA("#f5b800",0.4), borderRadius:12 }}>
+          <span style={{ fontSize:13, fontWeight:700, color:"var(--text-gold)" }}>{selectedIds.size} selected</span>
+          <span style={{ fontSize:13, color:"var(--text-secondary)" }}>Assign audit owner:</span>
+          <select value={bulkOwner} onChange={e=>setBulkOwner(e.target.value)} style={{ ...S.input(), width:"auto" }}>
+            <option value="">— Unassigned —</option>
+            {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+          <button onClick={handleBulkAssign} className="erc-prim" style={{ ...S.btn("primary"), padding:"7px 14px", fontSize:13 }}>Assign</button>
+          <button onClick={()=>setSelectedIds(new Set())} className="erc-ghost" style={{ ...S.btn("ghost"), padding:"7px 12px", fontSize:13 }}>Clear</button>
+        </div>
+      )}
+
       <div style={{ fontSize:13, color:"var(--text-muted)", marginBottom:14 }}>{filtered.length} credential(s) found</div>
 
       {filtered.length===0 ? (
-        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly||inUseOnly||notWorkingOnly
+        search||clientFilter!=="All"||portalFilter.length>0||restrictedOnly||inUseOnly||notWorkingOnly||ownerFilter!=="all"
           ? <EmptyState icon="🔍" title="Nothing matched" sub="Try different search terms or clear filters" />
           : <EmptyState icon="🔑" title="No credentials yet" sub="Add your first credential to get started"
               action={isAdmin && <button onClick={()=>setShowAdd(true)} className="erc-prim" style={S.btn("primary")}>+ Add Credential</button>} />
@@ -2830,7 +2922,7 @@ function CredentialsTab({ session, toast }) {
       )}
 
       {(editCred||showAdd) && (
-        <CredModal cred={editCred} onSave={handleSave} onClose={()=>{ setEditCred(null); setShowAdd(false); }} session={session} clients={clients} />
+        <CredModal cred={editCred} onSave={handleSave} onClose={()=>{ setEditCred(null); setShowAdd(false); }} session={session} clients={clients} users={users} />
       )}
       {deleteCredState && (
         <div style={S.overlay}>
@@ -3387,7 +3479,7 @@ function AuditTab({ session, toast }) {
 
   const actionColors = {
     add:"#10b981", approve:"#10b981", add_user:"#10b981", bulk_import:"#10b981", client_created:"#10b981", user_approved_registration:"#10b981", resolve_not_working:"#10b981",
-    login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa", release_in_use:"#60a5fa",
+    login:"#60a5fa", view:"#60a5fa", copy:"#60a5fa", copy_verify:"#60a5fa", logout:"#60a5fa", release_in_use:"#60a5fa", assign_audit_owner:"#a78bfa",
     edit:"#f59e0b", access_request:"#f59e0b", edit_user:"#f59e0b", password_changed:"#f59e0b", client_edited:"#f59e0b", bulk_import_overwrite:"#f59e0b", mark_in_use:"#f97316",
     delete:"#ef4444", deny:"#ef4444", login_failed:"#ef4444", remove_user:"#ef4444", client_archived:"#ef4444", user_rejected_registration:"#ef4444", report_not_working:"#ef4444",
   };
